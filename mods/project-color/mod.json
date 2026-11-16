@@ -1,1 +1,1 @@
-{ "place": "top", "size": 26 }
+{ "place": "none", "title": "Project color", "overlay": { "kind": "popup", "width": 320, "height": 430 } }

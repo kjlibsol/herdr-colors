@@ -1,3 +1,9 @@
 # Written by herdr-app into every mod folder
 *.d.ts
 jsconfig.json
+
+# Built locally from your own Herdr by tools/build-clones.mjs
+mods/project-color-tabs/
+mods/project-color-agents/
+mods/project-color-spaces/
+mods/project-color-menu/
