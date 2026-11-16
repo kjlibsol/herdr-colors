@@ -16,8 +16,7 @@
 <p align="center">
   <img src="preview.png" width="820" alt="Three spaces, three colors: each sidebar tile matches its tab bar">
   <br>
-  <sub>Three projects, three colors: each space's tile in the sidebar matches its tab bar.
-  Shown together here; Herdr shows one space at a time.</sub>
+  <sub>Three projects, three colors: each space's tile in the sidebar matches its tab bar.</sub>
 </p>
 
 Working in many Herdr spaces at once (a `web-shop` here, an `api-gateway` there, a `docs-site`
@@ -43,9 +42,7 @@ in its own color everywhere you look, like per-project title bars in VS Code.
 | **Agents panel** | A color stripe on every agent, so you see which project each one works in |
 | **Window title** | Your OS window title shows the space, e.g. `web-shop - Herdr` |
 
-> [!NOTE]
-> A *space* is Herdr's place for one piece of work: its tabs and terminals. A project can have
-> several, and they all share its color.
+All spaces of the same repo share its color.
 
 ## What you can do
 
@@ -146,8 +143,7 @@ this computer.
 It opens no network connections of its own. Commands it runs can, as they would anyway: git on
 a repo, `docker inspect` on an engine chosen by `-H` or `--context` in a machine's target, and
 anything Herdr itself does to reach a machine. Its shared-state entries (`project-color.*`)
-hold repo names and folder paths, which any other Herdr mod can read, as with all shared
-state. It replaces three of Herdr's
+hold repo names and folder paths, readable by other mods. It replaces three of Herdr's
 panels (tab bar, agents, spaces) with patched copies and adds a patched copy of its menu, used
 for the space right-click only (next section), and writes Herdr shared-state keys:
 `space.colors` (Herdr's own map of space colors: a hex color set there by hand is left alone,
@@ -204,8 +200,8 @@ your Herdr, so they always match your version.
    If a check fails, stop here: nothing visible has changed yet. Fix it, or delete the copied
    `$H/mods/project-color*` folders to back out.
 
-3. Herdr's shipped `main` layout can't take new blocks, so clone it (this also switches to it).
-   If you already have a `colors` layout from an earlier install, skip this step.
+3. Clone the `main` layout as `colors` (this also switches to it). If you already have a
+   `colors` layout from an earlier install, skip this step.
 
    ```sh
    herdr-app do layout.clone --name main --as colors
@@ -230,9 +226,8 @@ your Herdr, so they always match your version.
 previous version of those panels; if the build stops with a message, keep using them or switch
 back to `main` until this repo is updated.
 
-**To go back** for a moment: `herdr-app do layout.switch --name main` (or press `ctrl-shift-l`
-until Herdr's own layout is back; it cycles through all your layouts). If the window ever looks
-broken, `ctrl-alt-shift-escape` always restores Herdr's default layout.
+**To go back** for a moment: switch to the `main` layout
+(`herdr-app do layout.switch --name main`).
 
 **To uninstall:** switch to `main` first, then delete `$H/layouts/colors.json`,
 `$H/layouts/.state/colors.json` and the five `$H/mods/project-color*` folders. What stays
