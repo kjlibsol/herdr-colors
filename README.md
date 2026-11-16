@@ -11,6 +11,10 @@ each project in its own color everywhere you look, like per-project title bars i
 
 *Three projects shown together for the picture; in Herdr you see one space at a time.*
 
+![Right-click a space and choose Color... (left); the color picker it opens (right)](docs/picking-a-color.png)
+
+*Right-click a space and choose **Color...** (left) to open the picker (right).*
+
 ## What you get
 
 | Where | What you see |
@@ -43,8 +47,6 @@ and the [user stories](docs/user-stories.md). Installing takes a few commands (n
 layout copy); see [Install](#install).
 
 ## Setting a color
-
-![Right-click a space and choose Color... (left); the color picker (right)](docs/picking-a-color.png)
 
 Right-click a space, a machine, an agent or an agents-panel space header:
 
