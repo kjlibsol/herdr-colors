@@ -38,6 +38,8 @@ and the [user stories](docs/user-stories.md).
 
 ## Setting a color
 
+![Right-click a space and choose Color... (left); the color picker (right)](docs/picking-a-color.png)
+
 Right-click a space, a machine, an agent or an agents-panel space header:
 
 - **Space:** the menu has **Color...**
