@@ -8,7 +8,7 @@ import {
   resolveColor, parsePersonal, personalText, herdrFileText, normalizeHex, textOn,
   baseName, mergeSpaceColors, nameKey, PRESETS, containerFromTarget,
   repoFromConfigFile, repoFromGit, psEncode, psWriteScript, psRemoveScript, SH_WRITE, SH_REMOVE, b64,
-  colorFromHerdrFile,
+  colorFromHerdrFile, isNetworkPath, isInside, linkedPaths,
 } from "./color.js";
 
 // How colors are kept fresh without polling:
@@ -56,6 +56,9 @@ function readOn(path, on, cx) {
 async function runFileScript(machine, root, { text = null, remove = false }) {
   const dir = `${trim(root)}/.herdr`, file = `${dir}/color.json`;
   let r;
+  // The whole file travels on the command line; Windows caps that near 32,000
+  // characters, so a color.json over a few kilobytes is refused with a reason.
+  if (text && text.length > 6000) throw new Error(".herdr/color.json is too large to rewrite here; edit it by hand");
   if (localWindows(machine)) {
     const win = (p) => p.replace(/\//g, "\\");
     const script = remove ? psRemoveScript(win(dir), win(file)) : psWriteScript(win(dir), win(file), text);
@@ -86,6 +89,15 @@ export default class ProjectColor extends View {
     this.saved = shared("project-color.targets")?.spaces ?? {}; // last run's colors, until fresh ones land
     this.title = undefined;
     this.closed = false;
+    // This copy, for publisher election. Kept in the copy's own localStorage,
+    // which survives a reload (a reload doesn't run close()), so a reloaded
+    // publisher carries on at once instead of waiting for its old slot to expire.
+    this.id = null;
+    try { this.id = localStorage.getItem("pc-id"); } catch {}
+    if (!this.id) {
+      this.id = Math.random().toString(36).slice(2);
+      try { localStorage.setItem("pc-id", this.id); } catch {}
+    }
     this.rev = shared("project-color.rev") ?? 0;
     if (checking()) return;
     this.lookupMachines(cx);
@@ -99,9 +111,33 @@ export default class ProjectColor extends View {
   async close() {
     if (this.picking) return;
     this.closed = true;
-    setWindowTitle(null);
+    // Only the copy that publishes owns the title and the publisher slot.
+    if (shared("project-color.publisher")?.id === this.id) {
+      setWindowTitle(null);
+      setShared("project-color.publisher", null);
+    }
     for (const w of this.watches.values()) w.handle?.cancel?.();
     this.watches.clear();
+  }
+
+  // Only one copy publishes (two copies whose lookups differ for a moment
+  // would otherwise overwrite each other's colors back and forth). The
+  // publisher renews a heartbeat; another copy takes over if it goes quiet.
+  publisher() {
+    const p = shared("project-color.publisher"), now = Date.now();
+    if (p && p.id !== this.id && now - p.at < 150000) return false;
+    if (!p || p.id !== this.id || now - p.at > 30000) setShared("project-color.publisher", { id: this.id, at: now });
+    return true;
+  }
+
+  // Automatic colors counted among the projects in use now (open spaces and
+  // known machines), so names of repos long gone don't crowd the palette;
+  // every name keeps the color it was given.
+  inUse(name) {
+    const all = this.assigned(), live = new Set([nameKey(name)]);
+    for (const c of Object.values(this.cache)) if (c?.name) live.add(nameKey(c.name));
+    for (const m of Object.values(this.machineInfo ?? {})) if (m?.name) live.add(nameKey(m.name));
+    return Object.fromEntries(Object.entries(all).filter(([k]) => live.has(k)));
   }
 
   // Looks again. repos: a Set of local repo roots to limit it to, or null for
@@ -172,9 +208,10 @@ export default class ProjectColor extends View {
 
   // Watches a local repo's .herdr and .vscode folders (those that exist).
   watchRepo(git, cx) {
+    const linked = new Set(git.linked ?? []);
     for (const root of new Set([norm(git.root), norm(git.mainRoot)])) {
-      this.watch(`${root}/.herdr`, root, cx);
-      this.watch(`${root}/.vscode`, root, cx);
+      if (!linked.has(".herdr")) this.watch(`${root}/.herdr`, root, cx);
+      if (!linked.has(".vscode")) this.watch(`${root}/.vscode`, root, cx);
     }
   }
 
@@ -210,12 +247,21 @@ export default class ProjectColor extends View {
   // of its own? Two small reads; UNREACHABLE when the machine didn't answer.
   async stillThere(git, cwd, machine, cx) {
     const root = trim(git.root);
-    const head = await readOn(`${root}/.git/HEAD`, machine, cx);
-    if (head === UNREACHABLE) return UNREACHABLE;
-    if (head === null && (await readOn(`${root}/.git`, machine, cx)) === null) return false;  // a worktree's .git is a file
-    if (norm(cwd) !== norm(root)) {
-      const own = await readOn(`${trim(cwd)}/.git/HEAD`, machine, cx);
-      if (own !== null && own !== UNREACHABLE) return false;
+    // On another machine a failed read can't tell "no such file" from "away",
+    // so ask git there: same top level = same repo; an exec that fails = away.
+    if (machine) {
+      try {
+        const r = await exec("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { on: machine, timeout: 5000 });
+        return r.code === 0 && norm(r.stdout.trim()) === norm(root);
+      } catch { return UNREACHABLE; }
+    }
+    const head = await readOn(`${root}/.git/HEAD`, null, cx);
+    if (head === null && (await readOn(`${root}/.git`, null, cx)) === null) return false;  // a worktree's .git is a file
+    // The folder became a repo of its own? Compared case-blind, since Windows
+    // and macOS spell the same folder in different cases.
+    if (norm(cwd).toLowerCase() !== norm(root).toLowerCase()) {
+      const own = await readOn(`${trim(cwd)}/.git/HEAD`, null, cx);
+      if (own !== null) return false;
     }
     return true;
   }
@@ -253,26 +299,32 @@ export default class ProjectColor extends View {
         if (git && !machine) this.watchRepo(git, cx);
 
         let unreachable = this.repos[key].unreachable;
-        if (info.slow && !git && this.cache[key]) entry = this.cache[key];
+        // A slow git with nothing known yet: show last run's color (or nothing)
+        // rather than guess a project from the space name.
+        if (info.slow && !git) entry = this.cache[key] ?? this.fromSaved(space.id);
         else if (!unreachable) {
-          const roots = git ? [...new Set([norm(git.root), norm(git.mainRoot)])] : [];
+          // Folders the repo tracks as links are skipped entirely.
+          const linked = new Set(git?.linked ?? []);
+          const roots = git && !linked.has(".herdr") ? [...new Set([norm(git.root), norm(git.mainRoot)])] : [];
           const texts = await Promise.all([
             ...roots.map((r) => readOn(`${r}/.herdr/color.json`, machine, cx)),
-            git ? readOn(`${norm(git.root)}/.vscode/settings.json`, machine, cx) : null,
+            git && !linked.has(".vscode") ? readOn(`${norm(git.root)}/.vscode/settings.json`, machine, cx) : null,
           ]);
           if (texts.includes(UNREACHABLE)) unreachable = true;
           else {
             const personal = parsePersonal(await read(personalPath()));
             // A space outside any repo is named after the space, so cd-ing around doesn't change its color.
             const name = git?.name || space.name || baseName(cwd) || "~";
-            const color = resolveColor({ repoTexts: texts.slice(0, roots.length), personal, name, vscodeText: texts[roots.length], assigned: this.assigned() });
+            const color = resolveColor({ repoTexts: texts.slice(0, roots.length), personal, name, vscodeText: texts[roots.length], assigned: this.inUse(name) });
             // Only repos are remembered: a non-repo space's name can follow its
             // folder, and every cd would leave a name behind.
             if (color.source === "auto" && git) this.remember(name, color.background);
             // Which checkout's .herdr/color.json gave the color (a worktree's
             // own wins over the main checkout's), so Share and Clear act on it.
             const at = color.source === "repo" ? roots[texts.slice(0, roots.length).findIndex((t) => colorFromHerdrFile(t))] : null;
-            entry = { root: git ? norm(git.root) : null, mainRoot: git ? norm(git.mainRoot) : null, repoAt: at ?? null, machine, name, ...color };
+            // With .herdr linked there's nothing safe to share or clear in the repo.
+            const writable = git && !linked.has(".herdr");
+            entry = { root: writable ? norm(git.root) : null, mainRoot: writable ? norm(git.mainRoot) : null, repoAt: at ?? null, linked: linked.has(".herdr"), machine, name, ...color };
           }
         }
         if (unreachable) {
@@ -281,8 +333,8 @@ export default class ProjectColor extends View {
           this.repos[key] = { ...this.repos[key], unreachable: true };
           const before = this.cache[key] ?? this.fromSaved(space.id);
           const m = this.machineInfo?.[machine] ?? shared("project-color.targets")?.machines?.[machine];
-          entry = before ? { ...before, root: null, mainRoot: null, machine }
-            : m ? { root: null, mainRoot: null, machine, name: m.name, background: m.color, foreground: null, source: m.source } : null;
+          entry = before ? { ...before, root: null, mainRoot: null, machine, unreachable: true }
+            : m ? { root: null, mainRoot: null, machine, name: m.name, background: m.color, foreground: null, source: m.source, unreachable: true } : null;
         }
       } catch { /* leave the space as it was; the timer tries again */ }
       finally {
@@ -311,8 +363,19 @@ export default class ProjectColor extends View {
       // resolves a relative common dir against cwd instead.
       const r = await exec("git", ["-C", cwd, "rev-parse", "--show-toplevel", "--git-common-dir"], { on: machine, timeout: 5000 });
       if (r.code === 0) {
-        const git = repoFromGit(r.stdout, cwd);
-        return { git, retry: !git, unreachable: false };
+        let git = repoFromGit(r.stdout, cwd);
+        // A repo on a network share is left alone for good, not asked about every minute.
+        const onShare = !git && isNetworkPath(r.stdout.trim().split(/\r?\n/)[0]);
+        // A "repo root" that doesn't contain the folder (a planted core.worktree
+        // can point it anywhere) isn't trusted: no reads, watches or writes there.
+        if (git && !isInside(cwd, git.root)) return { git: null, retry: false, unreachable: false };
+        // Does the repo track .herdr or .vscode as a link? Then they're never
+        // read, watched or written (a cloned repo could point them anywhere).
+        if (git) {
+          const ls = await exec("git", ["-C", git.root, "ls-files", "-s", "--", ".herdr", ".vscode"], { on: machine, timeout: 5000 }).catch(() => null);
+          git = { ...git, linked: [...linkedPaths(ls?.code === 0 ? ls.stdout : "")] };
+        }
+        return { git, retry: !git && !onShare, unreachable: false };
       }
       // macOS without developer tools: /usr/bin/git only offers to install
       // them. Stop asking on that machine until the mod reloads.
@@ -344,8 +407,13 @@ export default class ProjectColor extends View {
     const k = `${target.engine.join(" ")}|${target.container}`;
     let l = this.labels[k];
     if (!l) {
+      // One engine timeout per round is enough: the rest of this round's
+      // containers keep their colors instead of each waiting 5 s in turn.
+      if (this.engineDown) return null;
       const [bin, ...pre] = target.engine;
-      const d = await exec(bin, [...pre, "inspect", "--format", '{{index .Config.Labels "devcontainer.config_file"}}', target.container], { timeout: 5000 }).catch(() => null);
+      let d = null;
+      try { d = await exec(bin, [...pre, "inspect", "--format", '{{index .Config.Labels "devcontainer.config_file"}}', target.container], { timeout: 5000 }); }
+      catch { this.engineDown = true; }
       if (d?.code !== 0) return null;  // engine not answering, or container gone: not kept
       l = this.labels[k] = { repo: repoFromConfigFile(d.stdout.trim()), inside: undefined };
     }
@@ -379,7 +447,10 @@ export default class ProjectColor extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await hc(["machine", "ls", "--json"]);
+        // No answer from hc: keep every machine as it is, rather than forget them all.
+        if (r.code !== 0) throw new Error(r.stderr || "hc machine ls failed");
         const list = JSON.parse(r.stdout || "{}").machines ?? [];
+        this.engineDown = false;
         const personal = parsePersonal(await read(personalPath()));
         const before = this.machineInfo ?? shared("project-color.targets")?.machines ?? {};
         const found = {}, info = {}, seen = new Set();
@@ -408,13 +479,16 @@ export default class ProjectColor extends View {
               name = repo.name;
               // The label's host path is only ours if its config file is really
               // here (the engine may run on another computer); an in-process read.
-              if (repo.hostRoot && (await read(repo.configFile)) !== null) root = norm(repo.hostRoot);
+              // ...and only if that folder really is a git repo (a label comes
+              // from the image, so it could name any folder with a .devcontainer).
+              if (repo.hostRoot && (await read(repo.configFile)) !== null
+                && ((await read(`${repo.hostRoot}/.git/HEAD`)) !== null || (await read(`${repo.hostRoot}/.git`)) !== null)) root = norm(repo.hostRoot);
               else if (m.state === "connected" && l.inside) { root = l.inside; on = m.name; }
             }
           }
           let texts = root ? await Promise.all([readOn(`${root}/.herdr/color.json`, on, cx), readOn(`${root}/.vscode/settings.json`, on, cx)]) : [null, null];
           if (texts.includes(UNREACHABLE)) { texts = [null, null]; root = null; on = null; }
-          let color = resolveColor({ repoTexts: [texts[0]], personal, name, vscodeText: texts[1], assigned: this.assigned() });
+          let color = resolveColor({ repoTexts: [texts[0]], personal, name, vscodeText: texts[1], assigned: this.inUse(name) });
           const prev = before[m.name];
           // Unreadable now, but read from the repo or VS Code before: keep that
           // color rather than fall back to an automatic one.
@@ -462,7 +536,7 @@ export default class ProjectColor extends View {
     const sp = {};
     for (const s of list) {
       const c = this.cache[this.keys[s.id]];
-      if (c) sp[s.id] = { label: s.name, machine: c.machine, root: c.root, mainRoot: c.mainRoot, repoAt: c.repoAt ?? null, name: c.name, color: c.background, source: c.source };
+      if (c) sp[s.id] = { label: s.name, machine: c.machine, root: c.root, mainRoot: c.mainRoot, repoAt: c.repoAt ?? null, name: c.name, color: c.background, source: c.source, unreachable: Boolean(c.unreachable), linked: Boolean(c.linked) };
       else if (prev[s.id] ?? this.saved[s.id]) sp[s.id] = { ...(prev[s.id] ?? this.saved[s.id]), label: s.name, root: null, mainRoot: null };
     }
     const targets = { spaces: sp, machines: this.machineInfo ?? shared("project-color.targets")?.machines ?? {} };
@@ -494,16 +568,16 @@ export default class ProjectColor extends View {
       this.rev = rev;
       if (!checking()) { for (const s of list) this.lookup(s, cx, true, this.keys[s.id]); this.lookupMachines(cx); }
     }
+    const publishing = !checking() && this.publisher();
     if (!checking()) {
       for (const s of list) this.lookup(s, cx, false, this.keys[s.id]);
-      this.publish(list);
-      this.publishTargets(list);
+      if (publishing) { this.publish(list); this.publishTargets(list); }
       this.prune();
     }
     const c = space ? this.cache[this.keys[space.id]] : null;
 
     const title = space ? `${space.name} - Herdr` : null;
-    if (title !== this.title && !checking()) { this.title = title; setWindowTitle(title); }
+    if (title !== this.title && publishing) { this.title = title; setWindowTitle(title); }
 
     // props { bar: false }: only look up and publish colors (for the tinted tab
     // bar), drawn nowhere; give its block { "px": 0 }.
@@ -594,7 +668,9 @@ export default class ProjectColor extends View {
   clear(cx) {
     this.act(cx, "Clearing…", async (a) => {
       await this.savePersonal(a.name, null);
-      for (const r of new Set([a.repoAt, a.root, a.mainRoot].filter(Boolean))) await runFileScript(a.machine, r, { remove: true });
+      // Repo files only when the repo set the color: a color.json that set
+      // nothing (other keys only) is someone's file, not ours to remove.
+      if (a.source === "repo") for (const r of new Set([a.repoAt, a.root, a.mainRoot].filter(Boolean))) await runFileScript(a.machine, r, { remove: true });
     });
   }
 
@@ -631,13 +707,19 @@ export default class ProjectColor extends View {
       : !a.mainRoot
         ? (a.kind === "machine" && !a.connected
           ? "The container is stopped, so only \"Just for me\" is possible now."
-          : "Not in a git repo, so only \"Just for me\" is possible.")
+          : a.unreachable
+            ? "The machine can't be reached right now, so only \"Just for me\" is possible."
+            : a.linked
+              ? "This repo's .herdr is a link, so it isn't touched; only \"Just for me\" is possible."
+              : "Not in a git repo, so only \"Just for me\" is possible.")
         : repoWins ? "The repo's color wins over \"Just for me\"; Clear it first to override it just for you." : null;
     const canClear = a.source === "personal" || (repoWins && Boolean(a.mainRoot));
     return v_flex().w_full().p(12).gap(9).text_size(12.5).text_color(t.foreground)
       .child(h_flex().h(34).px(10).rounded(7).items_center().bg(this.sel).text_color(fg)
         .child(div().font_semibold().truncate().child(a.label)))
-      .child(v_flex().gap(2).text_size(11.5).text_color(t.dim).child(div().child(applies)).child(div().child(from)))
+      .child(v_flex().gap(2).text_size(11.5).text_color(t.dim).child(div().child(applies)).child(div().child(from))
+        // Where "Share via repo" writes, in full, so a surprising folder is visible.
+        .when(Boolean(a.repoAt ?? a.mainRoot), (el) => el.child(div().truncate().tooltip(a.repoAt ?? a.mainRoot).child(`In ${a.repoAt ?? a.mainRoot}${a.machine ? ` on ${a.machine}` : ""}`))))
       .child(h_flex().flex_wrap().gap(6).children(PRESETS.map(swatch)))
       .child(Input.new(this.input).h(30).px(8).rounded(7).border_1().border_color(this.valid ? t.input : t.blocked)
         .bg(t.background).text_size(12.5).text_color(t.foreground))

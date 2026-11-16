@@ -6,6 +6,8 @@ for everyone or just for yourself.
 
 ![Project colors](preview.png)
 
+(The preview puts three spaces side by side; Herdr shows one at a time.)
+
 ## What you see
 
 - **Tab bar** (Herdr's 42px bar): its background, the inactive tabs and the Files/Changes
@@ -19,8 +21,9 @@ for everyone or just for yourself.
 - **Agents panel:** a 6x16px stripe (6x14 on the narrow rail) on each agent row and a 7px dot
   before each space header when sorted by space, in the space's color lifted 30% toward white on
   dark themes. Agent statuses look as in Herdr.
-- **Picker** (320x430 popup): a 34px preview bar with the target's name, "Applies to repo X · N
-  spaces", "Now: ..." (shared via the repo / just for you / from VS Code / automatic), 14 swatches
+- **Picker** (320x450 popup): a 34px preview bar with the target's name, "Applies to repo X · N
+  spaces", "Now: ..." (shared via the repo / just for you / from VS Code / automatic), "In
+  <folder> [on <machine>]" (where Share via repo writes), 14 swatches
   (28px, hex tooltip), a hex field (red border and hint while invalid), **Just for me**,
   **Share via repo** (only when a git repo can be reached), **Clear**, a note, errors.
 - The OS window title becomes `<space name> - Herdr`.
@@ -78,9 +81,28 @@ for everyone or just for yourself.
   `closeOverlay`, `theme`, `spaces`, `panes`, `props`, `appHome`, `window`, `checking`. The
   picker is the same mod opened as a popup with `props { picker, space | machine }`
   (`mod.json`: `{ "place": "none", "title": "Project color", "overlay": { "kind": "popup",
-  "width": 320, "height": 430 } }`).
+  "width": 320, "height": 450 } }`).
 - **`mods/project-color/color.js`:** all pure logic; `test/color.test.mjs` covers it and runs
   the PowerShell and sh write scripts for real.
+- **Data:**
+  - Palette (automatic colors and picker swatches, in this order): `#b02e26 #a8561a #6e5a10
+    #4f6b1a #1e7b34 #0f7466 #156a8c #2257b8 #1d3a7a #5236a8 #80309a #a12c7a #7a2a3c #55606e`.
+    A new repo takes the color with the fewest uses in `project-color.assigned`, scanning from
+    `FNV-1a(lowercased NFC name) % 14`; the pick is stored under that key.
+  - `.herdr/color.json`: `{ "color": "#rrggbb", "foreground"?: "#rrggbb" }`; a save keeps other
+    keys and drops `foreground`. VS Code: `workbench.colorCustomizations["titleBar.activeBackground"]`
+    (and `titleBar.activeForeground`), else `peacock.color`. All JSONC, a byte-order mark allowed.
+  - `space.colors` merge: an entry is replaced only when missing, a theme name (Herdr's own
+    pick: `ansi1..ansi6`, drawn as `#d9649a #3fae6a #e3814f #5b8def #8b7cf6 #22a99a`) or exactly
+    what this mod wrote before (`project-color.written`); a closed space's entry is removed if
+    it is still ours.
+  - `project-color.targets`: `{ spaces: { id: { label, machine, root, mainRoot, repoAt, name,
+    color, source } }, machines: { name: { ...the same, connected } } }`.
+- **Timing:** watch wake-ups gathered for 500 ms; a 60 s timer re-reads files, checks repos
+  and lists machines; git and docker calls time out after 5 s, reads after 8 s. The space menu
+  popup is 200x300 (Herdr's is 200x260, one item more).
+- **Install note:** copying the mods alone shows nothing; the four generated copies and the
+  layout edit are required (README, Install).
 
 ## Watch out
 
@@ -96,8 +118,12 @@ for everyone or just for yourself.
   base64 and decode with `base64 -d` (or `-D` on older macOS).
 - Git before 2.31 echoes `--path-format=absolute` back instead of failing: don't use it; resolve
   a relative `--git-common-dir` against the folder git ran in (a bare `.git` against the top).
-- A devcontainer label's host path may be on another computer: trust it only if its config file
-  is readable here. Never read or write a network path (`//host/share`).
+- A devcontainer label's host path may be on another computer, or any folder: trust it only if
+  its config file is readable here and it is a git repo. Never read or write a network path
+  (`//host/share`).
+- A cloned repo can redirect `git rev-parse --show-toplevel` (a planted `core.worktree`): accept
+  a top level only if it contains the folder git ran in. It can also ship `.herdr` or `.vscode`
+  as links: ask `git ls-files -s` once and leave tracked links alone.
 - Only plain `docker`/`podman` targets (optionally behind a bare `sudo`, run with `-n`) are
   inspected; anything else in front (ssh, wsl, env) may mean another engine.
 - Herdr reports a PowerShell terminal's process folder, which doesn't follow `Set-Location`.

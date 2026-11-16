@@ -5,9 +5,10 @@ import {
   resolveColor, parsePersonal, personalText, herdrFileText, colorFromHerdrFile,
   containerFromTarget, repoFromConfigFile, repoFromGit, PALETTE, PRESETS, hashIndex, assignColor,
   psString, psEncode, psWriteScript, psRemoveScript, personalColor, nameKey, SH_WRITE, SH_REMOVE, b64,
+  isInside, linkedPaths,
 } from "../mods/project-color/color.js";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -135,6 +136,23 @@ test("machines: container and engine from many target shapes", () => {
   assert.equal(t("wsl.exe docker exec box sh -c"), null);
   assert.equal(t("env DOCKER_HOST=tcp://x docker exec box sh -c"), null);
   assert.equal(t("sudo -u builder /usr/bin/docker exec box sh -c"), null);
+  assert.equal(t("docker run --rm img exec box sh -c"), null, "only global options before exec");
+  assert.deepEqual(t("podman --remote --connection=prod exec box sh -c"), { engine: ["podman", "--remote", "--connection=prod"], container: "box" });
+});
+
+test("repo safety helpers: inside checks and tracked links", () => {
+  assert.equal(isInside("X:\\Repo\\src", "x:/repo"), true);
+  assert.equal(isInside("/w/demo", "/w/demo"), true);
+  assert.equal(isInside("/w/demo-other", "/w/demo"), false);
+  assert.equal(isInside("/etc", "/w/demo"), false);
+  const ls = "100644 abc 0\t.herdr/color.json\n120000 def 0\t.vscode\n";
+  assert.deepEqual([...linkedPaths(ls)], [".vscode"]);
+  assert.deepEqual([...linkedPaths("120000 x 0\t.herdr/color.json")], [".herdr"]);
+  assert.equal(linkedPaths("").size, 0);
+});
+
+test("machines: more target shapes", () => {
+  const t = containerFromTarget;
   assert.deepEqual(t("podman exec -i box /bin/sh -c"), { engine: ["podman"], container: "box" });
   assert.deepEqual(t('"/Users/John Doe/.docker/bin/docker" exec -i box sh -c'), { engine: ["/Users/John Doe/.docker/bin/docker"], container: "box" });
   assert.deepEqual(t("docker -H ssh://me@host exec box sh -c"), { engine: ["docker", "-H", "ssh://me@host"], container: "box" });
@@ -228,6 +246,11 @@ test("PowerShell write and remove: odd names, smart quotes, links, missing folde
     runPs(psWriteScript(join(keep, ".herdr"), join(keep, ".herdr", "color.json"), "{}"));
     runPs(psRemoveScript(join(keep, ".herdr"), join(keep, ".herdr", "color.json")));
     assert.deepEqual(readdirSync(join(keep, ".herdr")), ["other.txt"]);
+    // A folder where color.json should be: refused by both scripts, left as it was.
+    const odd = join(base, "odd"); mkdirSync(join(odd, ".herdr", "color.json"), { recursive: true });
+    assert.notEqual(runPs(psWriteScript(join(odd, ".herdr"), join(odd, ".herdr", "color.json"), "{}")).status, 0);
+    assert.notEqual(runPs(psRemoveScript(join(odd, ".herdr"), join(odd, ".herdr", "color.json"))).status, 0);
+    assert.deepEqual(readdirSync(join(odd, ".herdr")), ["color.json"], "no temp file left, folder kept");
     // A repo folder that isn't there: refused, nothing created.
     const gone = join(base, "nope", ".herdr");
     const m = runPs(psWriteScript(gone, join(gone, "color.json"), "{}"));
@@ -260,6 +283,14 @@ test("sh write and remove: odd names, backslashes, missing folder, links", { ski
       const r = runSh(SH_REMOVE, p(name, ".herdr"), p(name, ".herdr", "color.json"));
       assert.equal(r.status, 0, `${name}: ${r.stderr}`);
       assert.equal(existsSync(join(base, name, ".herdr")), false, `${name}: .herdr removed despite .DS_Store`);
+    }
+    mkdirSync(join(base, "odd", ".herdr", "color.json"), { recursive: true });
+    assert.equal(runSh(SH_WRITE, p("odd", ".herdr"), p("odd", ".herdr", "color.json"), "{}").status, 3, "a folder named color.json is refused");
+    assert.deepEqual(readdirSync(join(base, "odd", ".herdr")), ["color.json"], "no temp file left");
+    if (process.platform !== "win32") {
+      mkdirSync(join(base, "perm"));
+      runSh(SH_WRITE, p("perm", ".herdr"), p("perm", ".herdr", "color.json"), "{}");
+      assert.equal(statSync(join(base, "perm", ".herdr", "color.json")).mode & 0o777, 0o644, "readable by others, like a normal file");
     }
     const m = runSh(SH_WRITE, p("nope", ".herdr"), p("nope", ".herdr", "color.json"), "{}");
     assert.equal(m.status, 4);

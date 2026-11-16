@@ -249,6 +249,29 @@ export function splitWords(line) {
 // `docker exec` / `podman exec` options that take a value, long and short.
 const EXEC_VALUE_OPTS = new Set(["-u", "--user", "-e", "--env", "-w", "--workdir", "--env-file", "--detach-keys"]);
 const SHORT_VALUE = new Set(["u", "e", "w"]);
+// docker/podman global options allowed before `exec`: ones taking a value, and flags.
+const GLOBAL_VALUE = new Set(["-c", "--context", "-H", "--host", "--config", "--log-level", "-l", "--tlscacert", "--tlscert", "--tlskey", "--url", "--connection", "--identity", "--root", "--runroot"]);
+const GLOBAL_FLAG = new Set(["-D", "--debug", "--tls", "--tlsverify", "--remote", "-r"]);
+
+// Is p inside (or equal to) dir? Compared case-blind with one separator style,
+// as Windows and macOS treat paths.
+export function isInside(p, dir) {
+  const a = String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const b = String(dir ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return a === b || a.startsWith(b + "/");
+}
+
+// From `git ls-files -s -- .herdr .vscode` output: does the repo track either
+// of them (or a file in them) as a link? A cloned repo could point them
+// anywhere, so linked ones are never read, watched or written.
+export function linkedPaths(lsFiles) {
+  const out = new Set();
+  for (const line of String(lsFiles ?? "").split(/\r?\n/)) {
+    const m = /^120000 \S+ \d+\t(.+)$/.exec(line.trim());
+    if (m) out.add(m[1].startsWith(".herdr") ? ".herdr" : ".vscode");
+  }
+  return out;
+}
 
 // Does this exec option take the next word as its value? "-u", "--user",
 // and a cluster ending in a value letter ("-iu" in "-iu vscode"); never
@@ -279,6 +302,14 @@ export function containerFromTarget(target) {
   if (!(before.length === 0 || (before.length === 1 && before[0] === "sudo"))) return null;
   const exec = w.indexOf("exec", bin + 1);
   if (exec < 0) return null;
+  // Between the binary and `exec` only the engines' own global options that
+  // pick an engine are allowed (so `docker run ... exec` and the like aren't
+  // turned into an inspect command).
+  for (let j = bin + 1; j < exec; j++) {
+    const [opt] = w[j].split("=");
+    if (GLOBAL_VALUE.has(opt)) { if (!w[j].includes("=")) j++; continue; }
+    if (!GLOBAL_FLAG.has(opt)) return null;
+  }
   let i = exec + 1;
   while (i < w.length && w[i].startsWith("-")) i += takesValue(w[i]) ? 2 : 1;
   const container = w[i];
@@ -410,10 +441,12 @@ $p = [IO.Path]::GetDirectoryName($d)
 if (-not $p -or -not (Test-Path -LiteralPath $p -PathType Container)) { throw "the repo folder isn't on this computer: $p" }
 [void][IO.Directory]::CreateDirectory($d)
 if (Linked $f) { throw '.herdr/color.json is a link; not writing through it' }
+if (Test-Path -LiteralPath $f -PathType Container) { throw '.herdr/color.json is a folder; not touching it' }
 $t = [IO.Path]::Combine($d, '.color.' + [Guid]::NewGuid().ToString('N') + '.tmp')
 $s = New-Object IO.FileStream($t, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
 try { $b = (New-Object Text.UTF8Encoding $false).GetBytes(${psString(text)}); $s.Write($b, 0, $b.Length) } finally { $s.Dispose() }
-Move-Item -LiteralPath $t -Destination $f -Force`;
+try { Move-Item -LiteralPath $t -Destination $f -Force }
+catch { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue; throw "could not replace .herdr/color.json (is it open in another program?)" }`;
 }
 
 // Removes color.json, then .herdr only if that left it empty; never follows links.
@@ -424,6 +457,7 @@ trap { [Console]::Out.WriteLine($_.Exception.Message); exit 1 }
 $d = ${psString(dir)}; $f = ${psString(file)}
 function Linked($p) { (Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) }
 if (Linked $d) { throw '.herdr is a link; not touching it' }
+if (Test-Path -LiteralPath $f -PathType Container) { throw '.herdr/color.json is a folder; not touching it' }
 if (Test-Path -LiteralPath $f) { if (Linked $f) { throw '.herdr/color.json is a link; not touching it' }; Remove-Item -LiteralPath $f -Force }
 if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force)) { Remove-Item -LiteralPath $d -Force }`;
 }
@@ -446,9 +480,13 @@ ${SH_DECODE}
 [ -d "$(dirname "$1")" ] || { echo "the repo folder isn't on this machine: $(dirname "$1")" >&2; exit 4; }
 [ -d "$1" ] || mkdir "$1"
 [ -L "$2" ] && { echo ".herdr/color.json is a link; not writing through it" >&2; exit 3; }
+[ -d "$2" ] && { echo ".herdr/color.json is a folder; not touching it" >&2; exit 3; }
 t=$(mktemp "$1/.color.XXXXXXXX")
+trap 'rm -f "$t"' EXIT
 printf '%s' "$3" > "$t"
-mv -f "$t" "$2"`;
+chmod 644 "$t"
+mv -f "$t" "$2"
+trap - EXIT`;
 // A failed rm fails the script (so Clear doesn't report success); Finder's
 // .DS_Store doesn't keep an otherwise empty .herdr alive.
 export const SH_REMOVE = `${SH_DECODE}

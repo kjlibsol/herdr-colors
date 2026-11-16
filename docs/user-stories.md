@@ -23,7 +23,7 @@ so that my team sees the same color, or I can have my own without touching the r
 ## 4. Every project gets a color automatically
 
 As a Herdr user who hasn't set any colors,
-I want every project to get a distinct color on its own, and keep it,
+I want every repo to get an easy-to-tell-apart color on its own, and keep it,
 so that colors help me from day one and don't change under me.
 
 ## 5. Reuse the colors I already set in VS Code

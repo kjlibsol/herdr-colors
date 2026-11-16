@@ -30,7 +30,7 @@ if (!existsSync(join(home, "mods", "tabs", "main.js"))) {
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // The picker as a popup: for a space id or a machine name (expressions).
-const PICKER_W = 320, PICKER_H = 430;
+const PICKER_W = 320, PICKER_H = 450;
 const openPicker = (what) => `openOverlay({ mod: "project-color", kind: "popup", width: ${PICKER_W}, height: ${PICKER_H}, props: { picker: true, ${what} } })`;
 const rightClick = (what) => `.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); ${openPicker(what)}; })`;
 
