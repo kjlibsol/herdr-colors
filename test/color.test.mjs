@@ -4,8 +4,12 @@ import {
   stripJsonc, normalizeHex, colorFromSettings, textOn, baseName, mergeSpaceColors,
   resolveColor, parsePersonal, personalText, herdrFileText, colorFromHerdrFile,
   containerFromTarget, repoFromConfigFile, repoFromGit, PALETTE, PRESETS, hashIndex, assignColor,
-  psQuote, psEncode, personalColor, nameKey, SH_WRITE, SH_REMOVE, b64,
+  psString, psEncode, psWriteScript, psRemoveScript, personalColor, nameKey, SH_WRITE, SH_REMOVE, b64,
 } from "../mods/project-color/color.js";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 test("JSONC with comments and trailing commas", () => {
   const text = `{
@@ -91,8 +95,9 @@ test("repo names like constructor or __proto__ don't break anything", () => {
   }
 });
 
-test(".herdr/color.json: saving keeps other keys, refuses a broken file", () => {
-  assert.deepEqual(JSON.parse(herdrFileText(`{ "color": "#000000", "foreground": "#ffffff" }`, "#1d4ed8")), { color: "#1d4ed8", foreground: "#ffffff" });
+test(".herdr/color.json: saving keeps other keys but not an old foreground, refuses a broken file", () => {
+  assert.deepEqual(JSON.parse(herdrFileText(`{ "color": "#000000", "foreground": "#ffffff", "note": "x" }`, "#1d4ed8")), { color: "#1d4ed8", note: "x" });
+  assert.equal(colorFromHerdrFile(`﻿{ "color": "#1d4ed8" }`).background, "#1d4ed8", "a byte-order mark is fine");
   assert.deepEqual(colorFromHerdrFile(herdrFileText(null, "#7d6608")), { background: "#7d6608", foreground: null, source: "repo" });
   assert.throws(() => herdrFileText(`{ broken`, "#7d6608"));
 });
@@ -105,13 +110,31 @@ test("space colors: replaces herdr's picks and our own, keeps a person's hex, fo
   assert.deepEqual(r.colors, { a: "#7d6608", b: "#922b21", c: "#abcdef", d: "#1e8449", e: "ansi2" });
   assert.deepEqual(r.written, { a: "#7d6608", b: "#922b21", d: "#1e8449" });
   assert.equal(mergeSpaceColors(r.colors, r.written, found, new Set(["a", "b", "c", "d", "e"])).changed, false, "running again changes nothing");
+  // A closed space: our color is taken back, a person's stays; nothing happens while no spaces are known.
+  const g = mergeSpaceColors({ x: "#111111", y: "#222222" }, { x: "#111111", y: "#999999" }, {}, new Set(["z"]));
+  assert.deepEqual(g.colors, { y: "#222222" });
+  assert.deepEqual(g.written, {});
+  assert.equal(mergeSpaceColors({ x: "#111111" }, { x: "#111111" }, {}, new Set()).changed, false);
+});
+
+test("personal file: clearing removes every spelling of the name", () => {
+  const p = parsePersonal(`{ "repos": { "myapp": "#111111", "MyApp": "#222222", "other": "#333333" } }`);
+  assert.deepEqual(JSON.parse(personalText(p, "MYAPP", null)).repos, { other: "#333333" });
+  assert.deepEqual(JSON.parse(personalText(p, "MyApp", "#444444")).repos, { other: "#333333", MyApp: "#444444" });
 });
 
 test("machines: container and engine from many target shapes", () => {
   const t = containerFromTarget;
   assert.deepEqual(t("docker.exe exec -i --user vscode some_container sh -c"), { engine: ["docker.exe"], container: "some_container" });
   assert.deepEqual(t("docker exec -i box sh -c"), { engine: ["docker"], container: "box" });
-  assert.deepEqual(t("sudo /usr/bin/docker --context prod exec -it -u me -e A=1 box bash -c"), { engine: ["sudo", "/usr/bin/docker", "--context", "prod"], container: "box" });
+  assert.deepEqual(t("sudo /usr/bin/docker --context prod exec -it -u me -e A=1 box bash -c"), { engine: ["sudo", "-n", "/usr/bin/docker", "--context", "prod"], container: "box" });
+  assert.deepEqual(t("docker exec -iu vscode box sh -c"), { engine: ["docker"], container: "box" }, "-iu takes a value");
+  assert.deepEqual(t("docker exec --user=vscode box sh -c"), { engine: ["docker"], container: "box" });
+  // Anything else in front: the engine may be elsewhere, or someone else.
+  assert.equal(t("ssh prod docker exec box sh -c"), null);
+  assert.equal(t("wsl.exe docker exec box sh -c"), null);
+  assert.equal(t("env DOCKER_HOST=tcp://x docker exec box sh -c"), null);
+  assert.equal(t("sudo -u builder /usr/bin/docker exec box sh -c"), null);
   assert.deepEqual(t("podman exec -i box /bin/sh -c"), { engine: ["podman"], container: "box" });
   assert.deepEqual(t('"/Users/John Doe/.docker/bin/docker" exec -i box sh -c'), { engine: ["/Users/John Doe/.docker/bin/docker"], container: "box" });
   assert.deepEqual(t("docker -H ssh://me@host exec box sh -c"), { engine: ["docker", "-H", "ssh://me@host"], container: "box" });
@@ -127,6 +150,8 @@ test("machines: repo from devcontainer label", () => {
   assert.equal(repoFromConfigFile("/workspaces/demo/.devcontainer/python/devcontainer.json").name, "demo");
   assert.equal(repoFromConfigFile("/workspaces/../../root/.devcontainer/devcontainer.json"), null);
   assert.equal(repoFromConfigFile(""), null);
+  assert.equal(repoFromConfigFile("//evil/share/.devcontainer/devcontainer.json"), null, "network share");
+  assert.equal(repoFromConfigFile("\\\\evil\\share\\.devcontainer\\devcontainer.json"), null, "network share");
 });
 
 test("git: worktrees, old git, relative and bare common dirs", () => {
@@ -141,6 +166,11 @@ test("git: worktrees, old git, relative and bare common dirs", () => {
   assert.deepEqual(repoFromGit("/srv/wt/main\n/srv/proj.git\n", "/srv/wt/main"), { root: "/srv/wt/main", mainRoot: "/srv/wt/main", name: "proj" });
   assert.deepEqual(repoFromGit("/srv/proj/main\n/srv/proj/.bare\n", "/srv/proj/main"), { root: "/srv/proj/main", mainRoot: "/srv/proj/main", name: "proj" });
   assert.equal(repoFromGit("", "/x"), null);
+  // A bare ".git" belongs to the top, even from a subfolder or with no cwd.
+  assert.deepEqual(repoFromGit("/w/demo\n.git\n", "/w/demo/src"), { root: "/w/demo", mainRoot: "/w/demo", name: "demo" });
+  assert.deepEqual(repoFromGit("/home/me\n.git\n", ""), { root: "/home/me", mainRoot: "/home/me", name: "me" });
+  // Network shares are not treated as repos.
+  assert.equal(repoFromGit("//evil/share/proj\n//evil/share/proj/.git\n", "x"), null);
 });
 
 test("repo names: case and Unicode form don't matter", () => {
@@ -162,10 +192,86 @@ test("sh scripts: Clear fails loudly, write needs the repo folder, .DS_Store doe
   assert.doesNotMatch(SH_WRITE, /mkdir -p/);
 });
 
-test("PowerShell: quoting and encoding keep paths out of any parser", () => {
-  assert.equal(psQuote("X:\\R&D's %TEMP% ^x"), "'X:\\R&D''s %TEMP% ^x'");
+test("PowerShell: strings travel base64, so no quote character can end them", () => {
+  const s = "X:\\R&D’s ‘x’ ‚y‛ 'z' %TEMP% ^x $(calc)";
+  assert.match(psString(s), /^\[Text\.Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String\('[A-Za-z0-9+/]+=*'\)\)$/);
   assert.match(psEncode("Write-Output 'ok & done'"), /^[A-Za-z0-9+/]+=*$/);
   assert.equal(Buffer.from(psEncode("hé"), "base64").toString("utf16le"), "hé");
+});
+
+// ---- The write scripts, run for real ----
+
+const tmp = () => mkdtempSync(join(tmpdir(), "pc-test-"));
+const hasPs = process.platform === "win32";
+const runPs = (script) => spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-EncodedCommand", psEncode(script)], { encoding: "utf8" });
+const shOk = spawnSync("sh", ["-c", "printf YQ== | base64 -d"], { encoding: "utf8" }).stdout === "a";
+const runSh = (script, ...args) => spawnSync("sh", ["-c", script, "sh", ...args.map(b64)], { encoding: "utf8" });
+
+test("PowerShell write and remove: odd names, smart quotes, links, missing folder", { skip: !hasPs && "Windows only" }, () => {
+  const base = tmp();
+  try {
+    for (const name of ["plain", "R&D x", "100% ^done", "it's", "a’b ‘c’; Write-Output pwned; ‘", "$(calc)"]) {
+      const root = join(base, name); mkdirSync(root);
+      const dir = join(root, ".herdr"), file = join(dir, "color.json");
+      const w = runPs(psWriteScript(dir, file, herdrFileText(null, "#1d4ed8")));
+      assert.equal(w.status, 0, `${name}: ${w.stdout}`);
+      assert.doesNotMatch(w.stdout, /pwned/);
+      assert.equal(JSON.parse(readFileSync(file, "utf8")).color, "#1d4ed8", name);
+      assert.deepEqual(readdirSync(dir), ["color.json"], `${name}: no temp file left`);
+      const r = runPs(psRemoveScript(dir, file));
+      assert.equal(r.status, 0, `${name}: ${r.stdout}`);
+      assert.equal(existsSync(dir), false, `${name}: empty .herdr removed`);
+    }
+    // A .herdr with other files keeps them.
+    const keep = join(base, "keep"); mkdirSync(join(keep, ".herdr"), { recursive: true });
+    writeFileSync(join(keep, ".herdr", "other.txt"), "x");
+    runPs(psWriteScript(join(keep, ".herdr"), join(keep, ".herdr", "color.json"), "{}"));
+    runPs(psRemoveScript(join(keep, ".herdr"), join(keep, ".herdr", "color.json")));
+    assert.deepEqual(readdirSync(join(keep, ".herdr")), ["other.txt"]);
+    // A repo folder that isn't there: refused, nothing created.
+    const gone = join(base, "nope", ".herdr");
+    const m = runPs(psWriteScript(gone, join(gone, "color.json"), "{}"));
+    assert.notEqual(m.status, 0);
+    assert.equal(existsSync(join(base, "nope")), false);
+    // A linked .herdr (junction): refused, target untouched.
+    const trap = join(base, "trap"), target = join(base, "target"); mkdirSync(trap); mkdirSync(target);
+    spawnSync("cmd", ["/c", "mklink", "/J", join(trap, ".herdr"), target]);
+    const l = runPs(psWriteScript(join(trap, ".herdr"), join(trap, ".herdr", "color.json"), "{}"));
+    assert.notEqual(l.status, 0);
+    assert.match(l.stdout, /link/);
+    assert.deepEqual(readdirSync(target), []);
+    spawnSync("cmd", ["/c", "rmdir", join(trap, ".herdr")]);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test("sh write and remove: odd names, backslashes, missing folder, links", { skip: !shOk && "needs sh and base64" }, () => {
+  const base = tmp();
+  const p = (...s) => join(base, ...s).replace(/\\/g, "/");
+  try {
+    for (const name of ["plain", "a;b $(x) `y`", "back\\slash", "it's"]) {
+      if (process.platform === "win32" && name.includes("\\")) continue;
+      mkdirSync(join(base, name));
+      const text = herdrFileText(`{ "note": "a\\\\b \\n %s" }`, "#1d4ed8");
+      const w = runSh(SH_WRITE, p(name, ".herdr"), p(name, ".herdr", "color.json"), text);
+      assert.equal(w.status, 0, `${name}: ${w.stderr}`);
+      assert.equal(readFileSync(join(base, name, ".herdr", "color.json"), "utf8"), text, `${name}: byte-identical`);
+      assert.deepEqual(readdirSync(join(base, name, ".herdr")), ["color.json"], `${name}: no temp file left`);
+      writeFileSync(join(base, name, ".herdr", ".DS_Store"), "");
+      const r = runSh(SH_REMOVE, p(name, ".herdr"), p(name, ".herdr", "color.json"));
+      assert.equal(r.status, 0, `${name}: ${r.stderr}`);
+      assert.equal(existsSync(join(base, name, ".herdr")), false, `${name}: .herdr removed despite .DS_Store`);
+    }
+    const m = runSh(SH_WRITE, p("nope", ".herdr"), p("nope", ".herdr", "color.json"), "{}");
+    assert.equal(m.status, 4);
+    assert.equal(existsSync(join(base, "nope")), false);
+    assert.equal(runSh(SH_WRITE, "", "", "").status, 5, "unreadable arguments refused");
+    if (process.platform !== "win32") {
+      mkdirSync(join(base, "trap")); mkdirSync(join(base, "elsewhere"));
+      symlinkSync(join(base, "elsewhere"), join(base, "trap", ".herdr"));
+      assert.equal(runSh(SH_WRITE, p("trap", ".herdr"), p("trap", ".herdr", "color.json"), "{}").status, 3);
+      assert.deepEqual(readdirSync(join(base, "elsewhere")), []);
+    }
+  } finally { rmSync(base, { recursive: true, force: true }); }
 });
 
 test("contrast and base names", () => {

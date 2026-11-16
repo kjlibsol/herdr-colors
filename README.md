@@ -7,7 +7,9 @@ Working in many Herdr spaces at once (a `web-shop` here, an `api-gateway` there,
 `docs-site` in a dev container) makes it easy to type into the wrong one. herdr-colors paints
 each project in its own color everywhere you look, like per-project title bars in VS Code.
 
-![Each project's color behind the tabs](preview.png)
+![Three spaces side by side: each sidebar tile matches its tab bar color](preview.png)
+
+*Three projects shown together for the picture; in Herdr you see one space at a time.*
 
 ## What you get
 
@@ -15,14 +17,17 @@ each project in its own color everywhere you look, like per-project title bars i
 |---|---|
 | **Tab bar** | The bar behind your tabs takes the project's color |
 | **Spaces sidebar** | Each space's letter tile in its project's color |
-| **Machines** (dev containers, remote machines) | A colored tile for each, in the color of the project inside it |
+| **Machines** | A colored tile for each: a dev container in the color of the project inside it, any other machine a color of its own |
 | **Agents panel** | A color stripe on every agent, so you see which project each one works in |
-| **Window title** | Your OS window title shows the project, e.g. `web-shop - Herdr` |
+| **Window title** | Your OS window title shows the space, e.g. `web-shop - Herdr` |
+
+(A *space* is Herdr's place for one piece of work: its tabs and terminals. A project can have
+several.)
 
 ## What you can do
 
-- **Pick a color where you see it:** right-click a space, machine or agent and choose
-  **Color...**.
+- **Pick a color where you see it:** right-click a space and choose **Color...**, or
+  right-click a machine or agent to open the color picker directly.
 - **Share it with your team:** **Share via repo** saves the color in the repo
   (`.herdr/color.json`), so everyone who uses Herdr on that repo sees the same color.
 - **Keep it to yourself:** **Just for me** saves it only on your computer and leaves the repo alone.
@@ -34,7 +39,8 @@ each project in its own color everywhere you look, like per-project title bars i
 
 It stays out of the way: it only writes files when you click a button, runs almost nothing in
 the background, and shows edits within a second. See [What it runs and writes](#what-it-runs-and-writes)
-and the [user stories](docs/user-stories.md).
+and the [user stories](docs/user-stories.md). Installing takes a few commands (node, jq and a
+layout copy); see [Install](#install).
 
 ## Setting a color
 
@@ -51,9 +57,9 @@ without `#`; Enter saves just for you), then:
 
 | Button | What it does |
 |---|---|
-| **Just for me** | Saves in your own file, `~/.config/herdr-app/project-colors.json`, on this computer |
-| **Share via repo** | Writes `.herdr/color.json` in the repo. Others see it once you commit it. Only offered when the repo can be reached and is a git repo |
-| **Clear** | Removes both herdr colors; the project goes back to its VS Code color, else an automatic one |
+| **Just for me** | Saves in your own file, `~/.config/herdr-app/project-colors.json`, on this computer. Disabled while the repo's `.herdr/color.json` sets the color, since that would win; Clear it first |
+| **Share via repo** | Writes `.herdr/color.json` in the repo (in a worktree: the file that sets the color now, else the main checkout's). Others see it once you commit it. Only offered when the space is in a git repo that can be reached |
+| **Clear** | Removes the project's herdr colors: your personal entry, then the repo's `.herdr/color.json` (worktree and main checkout). The project goes back to its VS Code color, else an automatic one. Disabled when there's nothing to clear or the repo can't be reached |
 
 ## Where colors come from
 
@@ -71,16 +77,18 @@ First match wins:
 
 A project is its git repo, named after the main checkout, so worktrees share their repo's
 color (bare-repo layouts like `proj.git` or `proj/.bare` too). Repo names match regardless of
-letter case and Unicode form. A space outside any git repo is colored by its space name.
+letter case and Unicode form. A space outside any git repo is colored by its space name. Repos
+on a network share (`\\server\share`) are not looked at.
 
-**Machines** reached with `docker exec` or `podman exec` (with `sudo`, a full path, `--context`
-or `-H` as in the machine's target) are colored as the repo inside them, found through the
-container's `devcontainer.config_file` label: read on your disk when that config file is really
-on this computer, else inside the container while it runs (the label's path, or the dev
-containers default `/workspaces/<repo>`). A stopped container keeps the color it last had; one
-never seen running uses your file or the automatic color of its repo name. Other machines get
-the automatic color of their name. While a machine is unreachable, its spaces keep their last
-color.
+**Machines** reached with a plain `docker exec` or `podman exec` (a full path, `--context` or
+`-H` are fine, as is a bare `sudo` in front, which is then run with `-n` so it never asks for a
+password) are colored as the repo inside them, found through the container's
+`devcontainer.config_file` label: read on your disk when that config file is really on this
+computer, else inside the container while it runs (the label's path, or the dev containers
+default `/workspaces/<repo>`). A stopped container keeps the color it last had; one never seen
+running uses your file or the automatic color of its repo name. Other machines (ssh, or a
+target with anything else in front of `docker`) get the automatic color of their name. While a
+machine is unreachable, its spaces keep their last color.
 
 Colors update at once after a change in the picker or an edit in a local repo's existing `.herdr` or `.vscode` folder, and within a minute otherwise (new folders, remote machines, containers). Other file activity in your repos (builds, installs, agents editing code) wakes nothing.
 
@@ -90,17 +98,19 @@ So you know before installing:
 
 | What | When |
 |---|---|
-| `git rev-parse` in a space's folder, on that space's machine | Once per folder a space is in. Again every minute only where it found no repo or couldn't reach the machine. Never on a computer where git can't run (e.g. macOS without developer tools) |
-| `docker inspect` (or `podman inspect`, as the machine's target runs it) of each dev container | Once per container |
+| `git rev-parse` in a space's folder, on that space's machine | Once per space and folder (again when its first terminal moves to another folder). Every minute only where it found no repo, or the repo vanished, or the machine didn't answer. Never on a machine where git can't run (no git, or macOS without developer tools) |
+| `docker inspect` (or `podman inspect`, with `sudo -n` if the machine's target uses `sudo`) of each dev container | Once per container, and once more after it disconnects. A failed inspect (engine not running) is tried again each minute |
 | `hc machine ls --json` | Every minute, and after a color change |
 | Reads `.herdr/color.json` and `.vscode/settings.json` in each repo, and your `project-colors.json` | Every minute. The `.herdr` and `.vscode` folders of local repos, and your file, are also watched, so an edit there shows within a second (a `.herdr` folder created by hand: within a minute) |
+| Reads each known repo's `.git/HEAD` (or `.git` in a worktree), a dev container's config file on your disk, and, once while a container runs, its config file inside it | Every minute (to notice a repo that vanished or a container that moved) |
 | Writes or removes `<repo>/.herdr/color.json`: through PowerShell on Windows (the path is never parsed by `cmd.exe`), through `sh` elsewhere and in containers (paths and text sent base64-encoded, so nothing in them is interpreted). Refuses if `.herdr` or `color.json` is a link or the repo folder isn't there; never creates more than `.herdr` itself | Only when you click **Share via repo** or **Clear** |
 | Writes `~/.config/herdr-app/project-colors.json`, keeping everything else in it; refuses if it has a typo | Only when you click **Just for me** or **Clear** |
 | Sets the OS window title to `<space> - Herdr` | On every space switch |
 
-No network access. It replaces four of Herdr's panels with patched copies (next section), and
-writes Herdr shared-state keys: `space.colors` (Herdr's own map of space colors; a hex color you
-set there yourself is left alone) and `project-color.*`.
+No network access. It replaces three of Herdr's panels (tab bar, agents, spaces) and its
+right-click menu with patched copies (next section), and writes Herdr shared-state keys:
+`space.colors` (Herdr's own map of space colors: a hex color set there by hand is left alone,
+Herdr's own automatic picks are replaced) and `project-color.*`.
 
 ## Install
 
@@ -115,9 +125,13 @@ You need:
   not be on your PATH; use the full path or add `~/.local/bin`.
 - **git** in each environment your spaces run in (2.5 or newer).
 
-The commands below use Herdr's home folder; set `H` once (it honours `$HERDR_APP_HOME`):
+Run the commands in a POSIX shell: Terminal on macOS, your shell on Linux, **Git Bash** on
+Windows. Get the repo and work from its folder, and set `H` to Herdr's home once (it honours
+`$HERDR_APP_HOME`):
 
 ```sh
+git clone https://github.com/kjlibsol/herdr-colors.git
+cd herdr-colors
 H="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 ```
 
@@ -138,19 +152,25 @@ your Herdr, so they always match your version.
 
    ```sh
    for m in project-color project-color-tabs project-color-agents project-color-spaces project-color-menu; do
-     cp -r "mods/$m" "$H/mods/"
-     herdr-app check "$H/mods/$m"
+     cp -r "mods/$m" "$H/mods/" && herdr-app check "$H/mods/$m" || { echo "stopped at $m"; break; }
    done
    ```
 
-3. Herdr's shipped `main` layout can't take new blocks, so clone it (this also switches to it):
+   If a check fails, stop here: nothing visible has changed yet. Fix it, or delete the copied
+   `$H/mods/project-color*` folders to back out.
+
+3. Herdr's shipped `main` layout can't take new blocks, so clone it (this also switches to it).
+   If you already have a `colors` layout from an earlier install, skip this step.
 
    ```sh
    herdr-app do layout.clone --name main --as colors
    ```
 
 4. In the clone, add a 0px `project-color` block (it draws nothing; it looks colors up) and
-   point the panels at the patched copies:
+   point the panels at the patched copies. This works on a clone of Herdr's `main` layout; for
+   another layout, make the same two changes by hand (the block first in the column holding the
+   tab bar, and `tabs`, `agents`, `spaces` renamed to `project-color-…`). Running it twice is
+   harmless.
 
    ```sh
    F="$H/layouts/colors.json"
@@ -160,11 +180,18 @@ your Herdr, so they always match your version.
 
    The window updates within a second. If nothing changes, look for `layouts/colors.error`.
 
-**After a Herdr update**, repeat steps 1 and 2.
+**After a Herdr update**, repeat steps 1 and 2. Until you do, the patched copies keep Herdr's
+previous version of those panels; if the build stops with a message, keep using them or switch
+back to `main` until this repo is updated.
 
-To go back: `ctrl-shift-l` (or `herdr-app do layout.switch --name main`). To uninstall,
-delete `layouts/colors.json` and the five `mods/project-color*` folders. Space tiles keep their
-last colors until you change them in Herdr.
+**To go back** for a moment: `ctrl-shift-l`, or `herdr-app do layout.switch --name main`. If the
+window ever looks broken, `ctrl-alt-shift-escape` always restores Herdr's default layout.
+
+**To uninstall:** switch to `main` first, then delete `$H/layouts/colors.json` and the five
+`$H/mods/project-color*` folders. What stays behind, to delete if you like: your
+`$H/project-colors.json`, any `.herdr/color.json` you shared in repos, and the `project-color.*`
+entries in Herdr's shared state (harmless). Space tiles keep their last colors until you change
+them in Herdr.
 
 ## Develop
 

@@ -1,90 +1,120 @@
 # Project colors
 
-Every project gets its own color, shown behind the tabs, on space tiles, machine rows and
-agent rows. Right-click any of them to pick one, saved in the repo or just for you.
+Every project gets its own color in Herdr: behind the tabs, on the space tiles in the sidebar,
+on machine rows and on every agent. Right-click any of them to pick a color, saved in the repo
+for everyone or just for yourself.
 
 ![Project colors](preview.png)
 
 ## What you see
 
-- **Tab bar** (Herdr's 42px bar): background, inactive tabs and the Files/Changes buttons in
-  the shown project's color; bottom border too. The active tab keeps Herdr's raised card. On
-  the color, inactive tab text and tinted icons are black or white at 95% (WCAG luminance,
-  threshold 0.179), `+` and window buttons at 85%.
-- **Spaces sidebar:** each space's 18px letter tile in its project color. Each machine row's
-  icon becomes a 16px rounded tile in the machine's color with the server glyph in black or
-  white; at 45% opacity while the machine isn't connected.
-- **Agents panel:** a 6x16px stripe (6x14 on the narrow rail) and a 7px dot on space headers,
-  in the space's color lifted 30% toward white on dark themes so deep colors stay visible.
-- **Picker** (320x430 popup): a 34px preview bar with the target's name, "Applies to repo X ·
-  N spaces", "Now: ..." (repo / just for you / VS Code / automatic), the 14 palette swatches
+- **Tab bar** (Herdr's 42px bar): its background, the inactive tabs and the Files/Changes
+  buttons take the shown space's project color, and so does its bottom border. The active tab
+  keeps Herdr's raised card. On the color, inactive tab text and tinted icons are black or white
+  at 95% opacity (WCAG luminance, threshold 0.179), the `+` and window buttons at 85%. On macOS,
+  the strip behind the traffic lights stays Herdr's plain bar color when the sidebar is hidden.
+- **Spaces sidebar:** each space's 18px letter tile is filled with its project color. Each
+  machine row's icon becomes a 16px rounded tile in the machine's color with the server glyph in
+  black or white; at 45% opacity while the machine isn't connected.
+- **Agents panel:** a 6x16px stripe (6x14 on the narrow rail) on each agent row and a 7px dot
+  before each space header when sorted by space, in the space's color lifted 30% toward white on
+  dark themes. Agent statuses look as in Herdr.
+- **Picker** (320x430 popup): a 34px preview bar with the target's name, "Applies to repo X · N
+  spaces", "Now: ..." (shared via the repo / just for you / from VS Code / automatic), 14 swatches
   (28px, hex tooltip), a hex field (red border and hint while invalid), **Just for me**,
-  **Share via repo** (only when a git repo is reachable), **Clear**, notes and errors.
+  **Share via repo** (only when a git repo can be reached), **Clear**, a note, errors.
 - The OS window title becomes `<space name> - Herdr`.
 
 ## How it behaves
 
-- Right-click a space: Herdr's menu plus **Color...** (palette icon). Right-click a machine
-  row, an agent row or an agents-panel space header: the picker opens directly.
-- Picker: swatch click or typed hex (with or without `#`) updates the preview; Enter = Just
-  for me; Esc closes. After a save the popup closes and every copy looks again at once.
-- "Just for me" is disabled when the repo's file sets the color (it would lose); a note says to
-  Clear first. Clear is disabled when there is no herdr color to clear.
-- Git runs once per folder (again only if the repo vanished, the folder became its own repo, it found none, or the machine didn't answer); docker inspect once per container. The `.herdr` and `.vscode` folders of local repos and Herdr's home (for the personal file) are watched, wake-ups gathered for 500 ms and only the affected repo re-read. A 60 s timer re-reads files, checks repos still exist and lists machines. A read through a machine that fails or takes over 8 s counts as unreachable: the space keeps its last color. An unreachable machine keeps its spaces'
-  last colors.
+- Right-click a space: Herdr's space menu plus **Color...** (palette icon) before Close.
+  Right-click a machine row, an agent row or an agents-panel space header: the picker opens
+  directly.
+- Picker: a swatch or a typed hex (with or without `#`) updates the preview; Enter = Just for me;
+  Esc closes. After a save the popup closes and every copy looks again at once.
+- **Just for me** is disabled while the repo's `.herdr/color.json` sets the color (it would
+  lose), with a note to Clear first. **Clear** is enabled only when there is a herdr color to
+  clear and its files can be reached; it removes the personal entry first, then the repo's file
+  in the worktree and the main checkout. If the repo sets the color but can't be reached, the
+  note says so and nothing is offered that couldn't work.
+- Lookup order: `.herdr/color.json` (the worktree's own, then the main checkout's), the personal
+  file `~/.config/herdr-app/project-colors.json` (`{ "vscode": true, "repos": { name: hex } }`,
+  names matched case- and Unicode-blind), VS Code's `titleBar.activeBackground` or
+  `peacock.color` (unless `"vscode": false`), else an automatic palette color: least used first,
+  ties by an FNV-1a hash of the name, remembered for repos.
+- Edits in a local repo's existing `.herdr` or `.vscode` folder show within about a second;
+  anything else (new folders, remote machines, containers) within a minute. Builds, installs and
+  agents editing code wake nothing. An unreachable machine keeps its spaces' last colors.
 
 ## Built from
 
-- Layout: a clone of `main` (`layout.clone {name: "main", as: "colors"}`). First child of the
-  `work` column: `{ "id": "project-color", "type": "block", "size": { "px": 0 }, "content": { "mod": "project-color", "props": { "bar": false } } }`.
-  The `tabs`, `agents` and `spaces` blocks use `project-color-tabs`, `-agents`, `-spaces`.
-- `mods/project-color/main.js`: per space, `git rev-parse --show-toplevel --path-format=absolute --git-common-dir`
-  on the space's machine, `readTextFile` of `.herdr/color.json` (worktree, then main checkout),
-  the personal file and `.vscode/settings.json`. Per machine, `hc(["machine","ls","--json"])`
-  and `docker inspect` of the container named in its `docker exec` target for the
-  `devcontainer.config_file` label. Publishes shared `space.colors` (merged: only Herdr's
-  theme-name picks and its own earlier values are replaced), `project-color.machines`,
-  `project-color.targets` (picker info), `project-color.assigned` (automatic colors),
-  `project-color.written`, `project-color.rev` (bumped after a save). The picker is the same
-  mod opened as a popup with `props { picker, space | machine }`.
-- Writes: `.herdr/color.json` via `powershell -EncodedCommand` on Windows (script and paths
-  base64-encoded; PowerShell literals; refuses reparse points; temp file + move) or `sh -c`
-  with paths as arguments elsewhere (refuses `-L`; temp file + `mv`). The personal file via
-  `writeTextFile` with the read snapshot; refuses to write over text that doesn't parse.
-- `mods/project-color/color.js`: all pure logic; `test/color.test.mjs` covers it.
-- `tools/build-clones.mjs`: regex-anchored patches of Herdr's `tabs`, `agents`, `spaces` and
-  `menu`; every anchor must match exactly once, and a source already mentioning
-  `project-color` is refused.
+- **Five mods.** `mods/project-color` is in the repo. The other four are Herdr's own `tabs`,
+  `agents`, `spaces` and `menu` with small patches; they are generated, not shipped: run
+  `node tools/build-clones.mjs` (reads `$HERDR_APP_HOME`, else `~/.config/herdr-app`), which
+  writes `mods/project-color-{tabs,agents,spaces,menu}`. Each patch is a regex anchor that must
+  match exactly once; if Herdr changed, the script stops and writes nothing:
+  - `tabs`: background, inactive tabs, icons, `+`/window buttons and Files/Changes in the space
+    color; untinted strip behind macOS traffic lights.
+  - `agents`: the stripe and right-click (opens the picker) on agent rows and the narrow rail; the
+    dot and right-click on space headers.
+  - `spaces`: machine icon tile (faded when not connected); right-click on a machine row opens
+    the picker; a space's right-click opens `project-color-menu`.
+  - `menu`: **Color...** in the space menu, opening the picker; `mods/project-color/palette.svg`
+    as its icon.
+- **Layout:** a clone of `main` (`layout.clone {name: "main", as: "colors"}`). First child of
+  the `work` column:
+  `{ "id": "project-color", "type": "block", "size": { "px": 0 }, "content": { "mod": "project-color", "props": { "bar": false } } }`
+  (draws nothing; it looks colors up). The `tabs`, `agents` and `spaces` blocks use the
+  `project-color-` copies.
+- **`mods/project-color/main.js`:** per space, `exec("git", ["-C", cwd, "rev-parse",
+  "--show-toplevel", "--git-common-dir"], { on: space.machine })` once per space and folder; per
+  dev container machine, `hc(["machine","ls","--json"])` and `<engine> inspect` of the
+  `devcontainer.config_file` label. Reads with `readTextFile` (8 s limit). Watches with
+  `watchFolder` (`<repo>/.herdr`, `<repo>/.vscode`, Herdr's home for the personal file).
+  Writes with `writeTextFile` (personal file) and, for `.herdr/color.json`, `exec` of
+  `powershell -EncodedCommand` (Windows) or `sh -c` with base64 arguments. Publishes shared
+  `space.colors`, `project-color.machines`, `project-color.targets`, `project-color.assigned`,
+  `project-color.written`, `project-color.rev`. Also `setWindowTitle`, `openOverlay`,
+  `closeOverlay`, `theme`, `spaces`, `panes`, `props`, `appHome`, `window`, `checking`. The
+  picker is the same mod opened as a popup with `props { picker, space | machine }`
+  (`mod.json`: `{ "place": "none", "title": "Project color", "overlay": { "kind": "popup",
+  "width": 320, "height": 430 } }`).
+- **`mods/project-color/color.js`:** all pure logic; `test/color.test.mjs` covers it and runs
+  the PowerShell and sh write scripts for real.
 
 ## Watch out
 
 - Shipped layouts don't take new blocks and `mod.json` `place` doesn't dock into them: clone.
-- A junction or symlink into `mods/` is not picked up; copy the folder.
+- A junction or symlink into `mods/` was not picked up on Windows in testing; copy the folders.
 - Shipped mods have CRLF line endings on Windows; normalise before matching.
 - Read `props()` in `init`, not its first argument, for overlay props.
-- `exec` arguments reach `cmd.exe` quoted only when they contain a space: never put a path in a
-  `cmd` command line.
-- From Git Bash, `hc exec` arguments starting with `/` get rewritten to Windows paths; set
+- Never put a path in a `cmd.exe` command line (`exec` quotes only arguments with spaces), and
+  never in a PowerShell literal: PowerShell also treats `‘ ’ ‚ ‛` as quotes. Send paths and text
+  base64 and decode them in the script. `Split-Path -LiteralPath -Parent` is not valid; use
+  `[IO.Path]::GetDirectoryName`.
+- Arguments to a machine reached through `docker exec ... sh -c` lose backslashes: send them
+  base64 and decode with `base64 -d` (or `-D` on older macOS).
+- Git before 2.31 echoes `--path-format=absolute` back instead of failing: don't use it; resolve
+  a relative `--git-common-dir` against the folder git ran in (a bare `.git` against the top).
+- A devcontainer label's host path may be on another computer: trust it only if its config file
+  is readable here. Never read or write a network path (`//host/share`).
+- Only plain `docker`/`podman` targets (optionally behind a bare `sudo`, run with `-n`) are
+  inspected; anything else in front (ssh, wsl, env) may mean another engine.
+- Herdr reports a PowerShell terminal's process folder, which doesn't follow `Set-Location`.
+- On macOS, Finder can drop `.DS_Store` into `.herdr`; remove it before `rmdir`.
+- From Git Bash, `hc exec` arguments starting with `/` are rewritten to Windows paths; set
   `MSYS_NO_PATHCONV=1` when testing container scripts by hand.
 - `nextCommand()` carries no arguments, so the picker can't be driven by a command with a target.
-- PowerShell errors under `-EncodedCommand` come out as CLIXML on stderr; the scripts print
-  plain messages to stdout and exit 1.
-- Arguments to a machine reached through `docker exec ... sh -c` lose backslashes: send every
-  argument base64 and decode it in the script (`base64 -d`, or `-D` on older macOS).
-- Git before 2.31 echoes `--path-format=absolute` back as an output line instead of failing:
-  don't use it; resolve a relative `--git-common-dir` against the folder git ran in.
-- A devcontainer label's host path may be on another computer (remote engine): trust it only
-  if the config file it names is readable here.
-- On macOS, the tab bar's left padding sits under the traffic lights; keep it untinted when the
-  sidebar is hidden. Finder can drop `.DS_Store` into `.herdr`; remove it before `rmdir`.
 
 ## Done when
 
-- `herdr-app check` passes for all five mods; `node --test test/color.test.mjs` passes.
+- `node --test test/color.test.mjs` passes, and `herdr-app check` passes for all five mods.
 - Two spaces in repos with different `.herdr/color.json` show those two tab bar colors.
-- A space in a dev container shows the color from the repo inside the container.
-- Right-click → Color... on a space, a machine and an agent opens the picker for that target;
-  Just for me, Share via repo and Clear each change the colors within a second.
-- Share via repo and Clear work on folders named `R&D x`, `100% ^y`, `it's`; a linked `.herdr`
-  is refused with a message.
+- A space in a dev container shows the color from the repo inside the container; stopping the
+  container keeps it.
+- Right-click → Color... on a space, and right-click on a machine and an agent, open the picker
+  for that target; Just for me, Share via repo and Clear each change the colors within a second.
+- In a worktree, Share via repo and Clear change the worktree's color.
+- Share via repo and Clear work on folders named `R&D x`, `100% ^y`, `it's`, `a’b`; a linked
+  `.herdr` is refused with a message.
 - Switching spaces changes the window title (proves the 0px block runs).

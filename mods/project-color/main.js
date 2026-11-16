@@ -8,6 +8,7 @@ import {
   resolveColor, parsePersonal, personalText, herdrFileText, normalizeHex, textOn,
   baseName, mergeSpaceColors, nameKey, PRESETS, containerFromTarget,
   repoFromConfigFile, repoFromGit, psEncode, psWriteScript, psRemoveScript, SH_WRITE, SH_REMOVE, b64,
+  colorFromHerdrFile,
 } from "./color.js";
 
 // How colors are kept fresh without polling:
@@ -31,19 +32,20 @@ const trim = (p) => String(p).replace(/[\\/]+$/, "");
 // One spelling per local folder, so watches and comparisons line up on Windows.
 const norm = (p) => trim(/^[A-Za-z]:/.test(String(p)) ? String(p).replace(/\\/g, "/") : p);
 const localWindows = (machine) => !machine && window()?.platform === "windows";
-// A local read: missing or unreadable is simply null.
+// A local read of our own files: missing or unreadable is simply null.
 const read = (path) => readTextFile(path).catch(() => null);
 const UNREACHABLE = Symbol("unreachable");
 
-// A read through a machine: null for a missing file, UNREACHABLE when the
-// machine didn't answer (rejected, or slower than REMOTE_MS).
+// A read of a repo's file, here or through a machine: null for a missing or
+// unreadable file, UNREACHABLE when a machine didn't answer. Both give up
+// after REMOTE_MS, so a file that never ends (a link to /dev/zero) or a hung
+// machine can't hold a lookup forever; locally that counts as unreadable.
 function readOn(path, on, cx) {
-  if (!on) return read(path);
   return new Promise((resolve) => {
     let done = false;
     const finish = (v) => { if (!done) { done = true; resolve(v); } };
-    cx.timer.after(REMOTE_MS, () => finish(UNREACHABLE));
-    readTextFile(path, { on }).then(finish, () => finish(UNREACHABLE));
+    cx.timer.after(REMOTE_MS, () => finish(on ? UNREACHABLE : null));
+    readTextFile(path, on ? { on } : undefined).then(finish, () => finish(on ? UNREACHABLE : null));
   });
 }
 
@@ -240,13 +242,19 @@ export default class ProjectColor extends View {
           if (ok === UNREACHABLE) info = { ...info, unreachable: true };
           else info = ok ? { ...info, unreachable: false } : null;  // gone or replaced: ask git again
         } else if (info?.unreachable) info = { ...info, retry: true };
-        if (!info || info.retry) info = await this.askGit(machine, cwd);
+        if (!info || info.retry) {
+          const was = info;
+          info = await this.askGit(machine, cwd, cx);
+          // A slow git isn't an answer: keep what we knew until it replies.
+          if (info.slow && was?.git) info = { ...was, retry: true };
+        }
         this.repos[key] = info;
         const { git } = info;
         if (git && !machine) this.watchRepo(git, cx);
 
         let unreachable = this.repos[key].unreachable;
-        if (!unreachable) {
+        if (info.slow && !git && this.cache[key]) entry = this.cache[key];
+        else if (!unreachable) {
           const roots = git ? [...new Set([norm(git.root), norm(git.mainRoot)])] : [];
           const texts = await Promise.all([
             ...roots.map((r) => readOn(`${r}/.herdr/color.json`, machine, cx)),
@@ -258,8 +266,13 @@ export default class ProjectColor extends View {
             // A space outside any repo is named after the space, so cd-ing around doesn't change its color.
             const name = git?.name || space.name || baseName(cwd) || "~";
             const color = resolveColor({ repoTexts: texts.slice(0, roots.length), personal, name, vscodeText: texts[roots.length], assigned: this.assigned() });
-            if (color.source === "auto") this.remember(name, color.background);
-            entry = { root: git ? norm(git.root) : null, mainRoot: git ? norm(git.mainRoot) : null, machine, name, ...color };
+            // Only repos are remembered: a non-repo space's name can follow its
+            // folder, and every cd would leave a name behind.
+            if (color.source === "auto" && git) this.remember(name, color.background);
+            // Which checkout's .herdr/color.json gave the color (a worktree's
+            // own wins over the main checkout's), so Share and Clear act on it.
+            const at = color.source === "repo" ? roots[texts.slice(0, roots.length).findIndex((t) => colorFromHerdrFile(t))] : null;
+            entry = { root: git ? norm(git.root) : null, mainRoot: git ? norm(git.mainRoot) : null, repoAt: at ?? null, machine, name, ...color };
           }
         }
         if (unreachable) {
@@ -289,8 +302,8 @@ export default class ProjectColor extends View {
     return s ? { root: null, mainRoot: null, machine: s.machine ?? null, name: s.name, background: s.color, foreground: null, source: s.source } : null;
   }
 
-  // `git rev-parse` in a space's folder: { git, retry, unreachable }.
-  async askGit(machine, cwd) {
+  // `git rev-parse` in a space's folder: { git, retry, unreachable, slow }.
+  async askGit(machine, cwd, cx) {
     const where = machine ?? "";
     if (this.noGit.has(where)) return { git: null, retry: false, unreachable: false };
     try {
@@ -304,16 +317,24 @@ export default class ProjectColor extends View {
       // macOS without developer tools: /usr/bin/git only offers to install
       // them. Stop asking on that machine until the mod reloads.
       if (/xcode-select|developer tools|command line tools/i.test(r.stderr)) this.noGit.add(where);
+      // No git on that machine at all (a slim container): stop asking it.
+      if (r.code === 127 || /git: (command )?not found|"git": executable file not found/i.test(r.stderr)) this.noGit.add(where);
       // Not a repo (yet): ask again on the timer, in case of a `git init`.
       return { git: null, retry: !this.noGit.has(where), unreachable: false };
     } catch (e) {
-      // Remote: the machine didn't answer. Here: a slow git (timeout) is asked
-      // again; only a git that can't start at all is given up on.
-      if (machine) return { git: null, retry: true, unreachable: true };
-      // Given up on only when git clearly can't start; anything else (a slow
-      // or busy git, a timeout) is asked again on the timer.
-      if (/cannot start|not found|no such file|os error 2\b|ENOENT/i.test(String(e?.message ?? e))) this.noGit.add(where);
-      return { git: null, retry: true, unreachable: false };
+      const cantStart = /cannot start|not found|no such file|os error 2\b|ENOENT/i.test(String(e?.message ?? e));
+      if (machine) {
+        // Did the machine answer at all? A small read tells "no git there"
+        // (stop asking it) from "machine away" (keep the last color, retry).
+        const probe = await readOn(`${trim(cwd)}/.herdr/color.json`, machine, cx);
+        if (probe === UNREACHABLE) return { git: null, retry: true, unreachable: true };
+        if (cantStart) this.noGit.add(where);
+        return { git: null, retry: !cantStart, unreachable: false, slow: !cantStart };
+      }
+      // Here: given up on only when git clearly can't start; anything else
+      // (a slow or busy git, a timeout) is asked again on the timer.
+      if (cantStart) this.noGit.add(where);
+      return { git: null, retry: true, unreachable: false, slow: !cantStart };
     }
   }
 
@@ -374,6 +395,14 @@ export default class ProjectColor extends View {
             const was = this.states?.[m.name];
             if (was === "connected" && m.state !== "connected") delete this.labels[lk];
             const l = await this.label(target, m, cx);
+            // Docker didn't answer: without the label we don't know the repo,
+            // so the machine keeps exactly what it had rather than being
+            // recolored (and saved) under its machine name.
+            if (!l && before[m.name]) {
+              found[m.name] = before[m.name].color;
+              info[m.name] = { ...before[m.name], connected: m.state === "connected" };
+              continue;
+            }
             const repo = l?.repo;
             if (repo) {
               name = repo.name;
@@ -392,7 +421,7 @@ export default class ProjectColor extends View {
           if (!root && color.source === "auto" && prev?.name === name && (prev.source === "repo" || prev.source === "vscode")) color = { background: prev.color, foreground: null, source: prev.source };
           if (color.source === "auto") this.remember(name, color.background);
           found[m.name] = color.background;
-          info[m.name] = { label: m.name, machine: on, root, mainRoot: root, name, color: color.background, source: color.source, connected: m.state === "connected" };
+          info[m.name] = { label: m.name, machine: on, root, mainRoot: root, repoAt: color.source === "repo" ? root : null, name, color: color.background, source: color.source, connected: m.state === "connected" };
         }
         // Forget containers no machine uses any more.
         for (const k of Object.keys(this.labels)) if (!seen.has(k)) delete this.labels[k];
@@ -433,7 +462,7 @@ export default class ProjectColor extends View {
     const sp = {};
     for (const s of list) {
       const c = this.cache[this.keys[s.id]];
-      if (c) sp[s.id] = { label: s.name, machine: c.machine, root: c.root, mainRoot: c.mainRoot, name: c.name, color: c.background, source: c.source };
+      if (c) sp[s.id] = { label: s.name, machine: c.machine, root: c.root, mainRoot: c.mainRoot, repoAt: c.repoAt ?? null, name: c.name, color: c.background, source: c.source };
       else if (prev[s.id] ?? this.saved[s.id]) sp[s.id] = { ...(prev[s.id] ?? this.saved[s.id]), label: s.name, root: null, mainRoot: null };
     }
     const targets = { spaces: sp, machines: this.machineInfo ?? shared("project-color.targets")?.machines ?? {} };
@@ -546,18 +575,26 @@ export default class ProjectColor extends View {
     this.act(cx, "Saving…", (a) => this.savePersonal(a.name, this.sel));
   }
 
+  // Writes the file that decides the color: the one that gave it now (a
+  // worktree's own, if it has one), else the main checkout's.
   saveRepo(cx) {
     if (!this.valid || !this.active?.mainRoot) return;
     this.act(cx, "Saving…", async (a) => {
-      const old = await readTextFile(`${trim(a.mainRoot)}/.herdr/color.json`, { on: a.machine }).catch(() => null);
-      await runFileScript(a.machine, a.mainRoot, { text: herdrFileText(old, this.sel) });
+      const at = a.repoAt ?? a.mainRoot;
+      let old;
+      try { old = await readTextFile(`${trim(at)}/.herdr/color.json`, a.machine ? { on: a.machine } : undefined); }
+      catch { if (a.machine) throw new Error("Can't reach the repo right now; try again when the machine is running."); old = null; }
+      await runFileScript(a.machine, at, { text: herdrFileText(old, this.sel) });
     });
   }
 
+  // Removes every herdr color for the project: the personal entry first (so a
+  // typo in that file stops before anything is deleted), then the repo files
+  // in the worktree and the main checkout.
   clear(cx) {
     this.act(cx, "Clearing…", async (a) => {
-      if (a.mainRoot) await runFileScript(a.machine, a.mainRoot, { remove: true });
       await this.savePersonal(a.name, null);
+      for (const r of new Set([a.repoAt, a.root, a.mainRoot].filter(Boolean))) await runFileScript(a.machine, r, { remove: true });
     });
   }
 
@@ -586,11 +623,17 @@ export default class ProjectColor extends View {
       .when(Boolean(tip), (el) => el.tooltip(tip))
       .child(label);
     const repoWins = a.source === "repo";
-    const note = !a.mainRoot
-      ? (a.kind === "machine" && !a.connected
-        ? "The container is stopped, so only \"Just for me\" is possible now."
-        : "Not in a git repo, so only \"Just for me\" is possible.")
-      : repoWins ? "The repo's color wins over \"Just for me\"; Clear it first to override it just for you." : null;
+    // The repo sets the color but can't be reached now (a stopped machine, a
+    // folder not read yet): nothing here can change it, so say so plainly.
+    const stuck = repoWins && !a.mainRoot;
+    const note = stuck
+      ? "This color comes from the repo, which can't be reached right now. Try again when it's available."
+      : !a.mainRoot
+        ? (a.kind === "machine" && !a.connected
+          ? "The container is stopped, so only \"Just for me\" is possible now."
+          : "Not in a git repo, so only \"Just for me\" is possible.")
+        : repoWins ? "The repo's color wins over \"Just for me\"; Clear it first to override it just for you." : null;
+    const canClear = a.source === "personal" || (repoWins && Boolean(a.mainRoot));
     return v_flex().w_full().p(12).gap(9).text_size(12.5).text_color(t.foreground)
       .child(h_flex().h(34).px(10).rounded(7).items_center().bg(this.sel).text_color(fg)
         .child(div().font_semibold().truncate().child(a.label)))
@@ -604,7 +647,7 @@ export default class ProjectColor extends View {
         .when(Boolean(a.mainRoot), (el) => el.child(button("pc-repo", "Share via repo", repoWins, this.valid, (cx) => this.saveRepo(cx), "Writes .herdr/color.json; others see it once you commit it"))))
       .when(Boolean(note), (el) => el.child(div().text_size(11).text_color(t.dim).child(note)))
       .child(h_flex().gap(8).items_center()
-        .child(button("pc-clear", "Clear", false, a.source === "repo" || a.source === "personal", (cx) => this.clear(cx), "Removes the herdr color"))
+        .child(button("pc-clear", "Clear", false, canClear, (cx) => this.clear(cx), "Removes the herdr color"))
         .child(div().flex_1().min_w(0).text_size(11).text_color(t.dim).child("Back to VS Code's or an automatic color")))
       .when(Boolean(this.error), (el) => el.child(div().text_size(11.5).text_color(t.blocked).child(this.error)));
   }

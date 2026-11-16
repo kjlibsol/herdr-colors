@@ -32,10 +32,10 @@ As someone who already colors projects in VS Code,
 I want Herdr to pick up those colors,
 so that a project looks the same in both tools without setting it twice.
 
-## 6. Dev containers and other machines carry their project's color
+## 6. Dev containers carry their project's color
 
 As a developer working in dev containers and on other machines,
-I want those machines and their spaces to show their project's color, even while a container is stopped,
+I want a dev container and its spaces to show their project's color, even while it is stopped, and every other machine a color of its own,
 so that I can tell them apart as easily as local projects.
 
 ## 7. Changes show up quickly without slowing Herdr down
@@ -53,5 +53,17 @@ so that I can trust it with my repos and my Herdr setup.
 ## 9. Survives Herdr updates
 
 As a Herdr user,
-I want to rebuild the mod's parts easily after a Herdr update, and be told clearly if something no longer fits,
-so that an update never leaves me with a broken window.
+I want to rebuild the mod's parts easily after a Herdr update, be told clearly if something no longer fits, and get back to Herdr's own layout in one step,
+so that an update never leaves me stuck.
+
+## 10. Know which project and which color I'm changing
+
+As a Herdr user picking a color,
+I want the picker to show which repo the color applies to, how many spaces share it, and where the current color comes from,
+so that I change the right thing and understand why a color is what it is.
+
+## 11. Back out cleanly
+
+As someone trying the mod,
+I want to switch back to Herdr's own layout at any time and uninstall without leftovers I don't know about,
+so that trying it costs nothing.

@@ -111,7 +111,8 @@ export function normalizeHex(value) {
 // there is text that doesn't parse, so callers never mistake a typo for "empty".
 function parseStrict(text) {
   if (text == null || !String(text).trim()) return null;
-  const s = JSON.parse(stripJsonc(String(text)));
+  // A byte-order mark (Windows editors add one) isn't part of the JSON.
+  const s = JSON.parse(stripJsonc(String(text).replace(/^﻿/, "")));
   if (!s || typeof s !== "object" || Array.isArray(s)) throw new Error("not a JSON object");
   return s;
 }
@@ -125,9 +126,12 @@ export function colorFromHerdrFile(text) {
 }
 
 // .herdr/color.json's new text with color set, keeping every other key the
-// file had. Throws when the old file has text that doesn't parse.
+// file had except foreground, which was chosen for the old color (the new
+// one gets black or white by contrast). Throws when the old file has text
+// that doesn't parse.
 export function herdrFileText(oldText, hex) {
-  return JSON.stringify({ ...(parseStrict(oldText) ?? {}), color: hex }, null, 2) + "\n";
+  const { foreground: _old, ...rest } = parseStrict(oldText) ?? {};
+  return JSON.stringify({ ...rest, color: hex }, null, 2) + "\n";
 }
 
 // The person's own file in herdr's home:
@@ -152,7 +156,11 @@ export function personalText(personal, name, hex) {
   if (!personal.ok) throw new Error(`project-colors.json doesn't parse (${personal.error}); fix it first`);
   const raw = personal.raw ?? {};
   const repos = { ...(raw.repos && typeof raw.repos === "object" ? raw.repos : {}) };
-  if (hex) repos[name] = hex; else delete repos[name];
+  // Lookups match names case- and Unicode-blind, so setting or clearing
+  // replaces every spelling of this name.
+  const k = nameKey(name);
+  for (const key of Object.keys(repos)) if (nameKey(key) === k) delete repos[key];
+  if (hex) repos[name] = hex;
   return JSON.stringify({ ...raw, repos }, null, 2) + "\n";
 }
 
@@ -206,7 +214,14 @@ export function mergeSpaceColors(current, written, found, live = null) {
   const colors = { ...current };
   const mine = { ...written };
   let changed = false;
-  if (live) for (const id of Object.keys(mine)) if (!live.has(id)) { delete mine[id]; changed = true; }
+  // A space that is gone: forget it, and take back the color this mod gave it,
+  // so it can't later pass for one the person picked. Skipped while no spaces
+  // are known yet (still loading).
+  if (live && live.size) for (const id of Object.keys(mine)) if (!live.has(id)) {
+    if (colors[id] === mine[id]) delete colors[id];
+    delete mine[id];
+    changed = true;
+  }
   for (const [id, hex] of Object.entries(found)) {
     const now = colors[id];
     const ours = now === undefined || !String(now).startsWith("#") || now === mine[id];
@@ -231,30 +246,50 @@ export function splitWords(line) {
   return words;
 }
 
-// `docker exec` / `podman exec` options that take a value.
+// `docker exec` / `podman exec` options that take a value, long and short.
 const EXEC_VALUE_OPTS = new Set(["-u", "--user", "-e", "--env", "-w", "--workdir", "--env-file", "--detach-keys"]);
+const SHORT_VALUE = new Set(["u", "e", "w"]);
+
+// Does this exec option take the next word as its value? "-u", "--user",
+// and a cluster ending in a value letter ("-iu" in "-iu vscode"); never
+// "--user=vscode" or "-uvscode".
+function takesValue(opt) {
+  if (opt.includes("=")) return false;
+  if (EXEC_VALUE_OPTS.has(opt)) return true;
+  return /^-[A-Za-z]{2,}$/.test(opt) && SHORT_VALUE.has(opt.at(-1));
+}
 
 // The container a herdr machine reaches through `docker exec` or `podman
 // exec`, from its `hc machine ls` target, and the command that reaches the
-// engine the same way (sudo, a full binary path, --context or -H kept), so
-// `inspect` asks the same engine:
+// same engine, for `inspect`. Only plain targets count: the engine binary
+// (a full path is fine) with its global options (--context, -H), optionally
+// behind a bare `sudo`, which then runs non-interactively (-n) so it can never
+// wait for a password. Anything else in front (ssh, wsl, env, sudo with
+// options) means the engine may be elsewhere or someone else: null.
 //   "docker.exe exec -i --user vscode some_container sh -c"
 //     -> { engine: ["docker.exe"], container: "some_container" }
 //   "sudo /usr/bin/docker --context prod exec -it -u me box bash -c"
-//     -> { engine: ["sudo", "/usr/bin/docker", "--context", "prod"], container: "box" }
+//     -> { engine: ["sudo", "-n", "/usr/bin/docker", "--context", "prod"], container: "box" }
 // docker compose targets name a service, not a container: null.
 export function containerFromTarget(target) {
   const w = splitWords(target);
   const bin = w.findIndex((x) => /(^|[\\/])(docker|podman)(\.exe)?$/i.test(x));
   if (bin < 0 || w.includes("compose")) return null;
+  const before = w.slice(0, bin);
+  if (!(before.length === 0 || (before.length === 1 && before[0] === "sudo"))) return null;
   const exec = w.indexOf("exec", bin + 1);
   if (exec < 0) return null;
   let i = exec + 1;
-  while (i < w.length && w[i].startsWith("-")) i += EXEC_VALUE_OPTS.has(w[i]) ? 2 : 1;
+  while (i < w.length && w[i].startsWith("-")) i += takesValue(w[i]) ? 2 : 1;
   const container = w[i];
   if (!container) return null;
-  return { engine: [...w.slice(0, bin).filter((x) => x === "sudo"), ...w.slice(bin, exec)], container };
+  return { engine: [...(before.length ? ["sudo", "-n"] : []), ...w.slice(bin, exec)], container };
 }
+
+// A path on another computer reached over the network ("//host/share",
+// "\\host\share"): never read or written here, so a crafted label or repo
+// can't make Windows connect to a host of its choosing.
+export const isNetworkPath = (p) => /^[\\/]{2}/.test(String(p ?? ""));
 
 // A dev container's repo from its devcontainer.config_file label: the repo's
 // name, the folder the label names (a host path: on this computer only if the
@@ -263,7 +298,7 @@ export function containerFromTarget(target) {
 // Configs nested under .devcontainer/<name>/ count; a path with ".." doesn't.
 export function repoFromConfigFile(path) {
   const p = String(path ?? "").replace(/\\/g, "/");
-  if (p.split("/").includes("..")) return null;
+  if (p.split("/").includes("..") || isNetworkPath(p)) return null;
   const m = /^(.*?)\/\.devcontainer\/.+$/.exec(p);
   if (!m || !m[1]) return null;
   const root = m[1];
@@ -293,11 +328,14 @@ export function resolvePath(base, rel) {
 // git that doesn't know an option echoes back ("--...") is skipped.
 // Bare-repo layouts (common dir "proj.git" or "proj/.bare") are named after
 // the repo, and have no main checkout to write to, so mainRoot is the worktree.
+// A repo on a network share is treated as no repo (see isNetworkPath).
 export function repoFromGit(stdout, cwd) {
   const lines = String(stdout ?? "").split(/\r?\n/).map((s) => s.trim()).filter((s) => s && !s.startsWith("--"));
   const [top, rawCommon] = lines;
-  if (!top) return null;
-  const common = rawCommon ? resolvePath(cwd ?? top, rawCommon) : null;
+  if (!top || isNetworkPath(top)) return null;
+  // A bare ".git" is the top's own; anything else relative is relative to cwd.
+  const common = !rawCommon ? null : rawCommon === ".git" ? resolvePath(top, ".git") : resolvePath(cwd || top, rawCommon);
+  if (common && isNetworkPath(common)) return null;
   if (!common) return { root: top, mainRoot: top, name: baseName(top) };
   if (/[\\/]\.git$/.test(common)) {
     const main = common.replace(/[\\/]\.git$/, "");
@@ -316,8 +354,11 @@ export function baseName(path) {
 
 // ---- Writing .herdr/color.json safely ----
 
-// A PowerShell single-quoted literal: nothing inside is interpreted.
-export const psQuote = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+// A PowerShell expression giving back the string s. It travels as base64
+// ([A-Za-z0-9+/=] only) and is decoded inside the script, so no quote
+// character of any kind (PowerShell also treats ‘ ’ ‚ ‛ as quotes) can
+// end a literal early.
+export const psString = (s) => `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(s)}'))`;
 
 // PowerShell -EncodedCommand payload: base64 of UTF-16LE. The whole script,
 // paths included, travels as [A-Za-z0-9+/=], so cmd.exe and argument quoting
@@ -355,20 +396,23 @@ function base64(bytes) {
 }
 
 // Refuses a .herdr folder or color.json that is a link (a repo could ship one
-// pointing anywhere), then writes through a temp file and a rename.
+// pointing anywhere) and a repo folder that isn't there, then writes through a
+// fresh, randomly named temp file and a rename. Works in Windows PowerShell 5.1
+// and PowerShell 7.
 export function psWriteScript(dir, file, text) {
   return `$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 trap { [Console]::Out.WriteLine($_.Exception.Message); exit 1 }
-$d = ${psQuote(dir)}; $f = ${psQuote(file)}
+$d = ${psString(dir)}; $f = ${psString(file)}
 function Linked($p) { (Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) }
 if (Linked $d) { throw '.herdr is a link; not writing through it' }
-$p = Split-Path -LiteralPath $d -Parent
-if (-not (Test-Path -LiteralPath $p -PathType Container)) { throw "the repo folder isn't on this computer: $p" }
+$p = [IO.Path]::GetDirectoryName($d)
+if (-not $p -or -not (Test-Path -LiteralPath $p -PathType Container)) { throw "the repo folder isn't on this computer: $p" }
 [void][IO.Directory]::CreateDirectory($d)
 if (Linked $f) { throw '.herdr/color.json is a link; not writing through it' }
-$t = "$f.tmp"
-[IO.File]::WriteAllText($t, ${psQuote(text)}, (New-Object Text.UTF8Encoding $false))
+$t = [IO.Path]::Combine($d, '.color.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+$s = New-Object IO.FileStream($t, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+try { $b = (New-Object Text.UTF8Encoding $false).GetBytes(${psString(text)}); $s.Write($b, 0, $b.Length) } finally { $s.Dispose() }
 Move-Item -LiteralPath $t -Destination $f -Force`;
 }
 
@@ -377,7 +421,7 @@ export function psRemoveScript(dir, file) {
   return `$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 trap { [Console]::Out.WriteLine($_.Exception.Message); exit 1 }
-$d = ${psQuote(dir)}; $f = ${psQuote(file)}
+$d = ${psString(dir)}; $f = ${psString(file)}
 function Linked($p) { (Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) }
 if (Linked $d) { throw '.herdr is a link; not touching it' }
 if (Test-Path -LiteralPath $f) { if (Linked $f) { throw '.herdr/color.json is a link; not touching it' }; Remove-Item -LiteralPath $f -Force }
@@ -402,8 +446,9 @@ ${SH_DECODE}
 [ -d "$(dirname "$1")" ] || { echo "the repo folder isn't on this machine: $(dirname "$1")" >&2; exit 4; }
 [ -d "$1" ] || mkdir "$1"
 [ -L "$2" ] && { echo ".herdr/color.json is a link; not writing through it" >&2; exit 3; }
-printf '%s' "$3" > "$2.tmp.$$"
-mv -f "$2.tmp.$$" "$2"`;
+t=$(mktemp "$1/.color.XXXXXXXX")
+printf '%s' "$3" > "$t"
+mv -f "$t" "$2"`;
 // A failed rm fails the script (so Clear doesn't report success); Finder's
 // .DS_Store doesn't keep an otherwise empty .herdr alive.
 export const SH_REMOVE = `${SH_DECODE}
