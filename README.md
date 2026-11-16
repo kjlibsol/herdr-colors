@@ -14,8 +14,8 @@ there. That file may be JSONC (comments, trailing commas).
 
 1. `workbench.colorCustomizations` → `titleBar.activeBackground`
 2. `peacock.color`
-3. Neither, or the file can't be read (e.g. a stopped container): a hash of the repo's folder
-   name picks one of 10 palette colors, so it stays the same until the repo is renamed
+3. Neither, or the file can't be read (e.g. a stopped container): a soft gray (`#5f6670`),
+   so projects without a color of their own are easy to tell apart from those with one
 
 The shown space's settings are re-read every 30 seconds, so a color changed in VS Code shows
 up without switching spaces. `project-color` also sets the OS window title to `<space> - Herdr`.
@@ -91,7 +91,7 @@ their last project colors until you pick others in Herdr.
 node --test test/color.test.mjs
 ```
 
-`mods/project-color/color.js` holds the pure logic (JSONC, color lookup, hash, contrast,
+`mods/project-color/color.js` holds the pure logic (JSONC, color lookup, fallback, contrast,
 merging into `space.colors`) and is what the tests cover. `main.js` is the Herdr view. The
 patches for the tabs and agents mods live in `tools/build-clones.mjs`; don't edit the
 generated `main.js` files. After editing, copy the folder into Herdr's `mods/` again; saving

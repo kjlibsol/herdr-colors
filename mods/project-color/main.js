@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, exec, readTextFile, setWindowTitle, checking, shared, setShared, props } from "herdr";
-import { colorFromSettings, hashColor, textOn, baseName, mergeSpaceColors } from "./color.js";
+import { colorFromSettings, FALLBACK, textOn, baseName, mergeSpaceColors } from "./color.js";
 
 // How often the shown project's settings.json is read again, so a color
 // edited in VS Code shows up without switching spaces.
@@ -46,11 +46,11 @@ export default class ProjectColor extends View {
       let found = null;
       try {
         found = colorFromSettings(await readTextFile(`${root.replace(/[\\/]+$/, "")}/.vscode/settings.json`, { on: machine }));
-      } catch { /* unreadable: fall back to the hash */ }
+      } catch { /* unreadable: fall back to gray */ }
       const name = baseName(root) || "~";
       this.cache[key] = found
         ? { root, name, ...found }
-        : { root, name, background: hashColor(name), foreground: null, source: "hash" };
+        : { root, name, background: FALLBACK, foreground: null, source: "fallback" };
       delete this.loading[key];
       cx.notify();
     });

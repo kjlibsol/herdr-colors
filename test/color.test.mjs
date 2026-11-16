@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { stripJsonc, normalizeHex, colorFromSettings, hashColor, textOn, baseName, PALETTE, mergeSpaceColors } from "../mods/project-color/color.js";
+import { stripJsonc, normalizeHex, colorFromSettings, FALLBACK, textOn, baseName, mergeSpaceColors } from "../mods/project-color/color.js";
 
 test("JSONC with comments and trailing commas", () => {
   const text = `{
@@ -31,9 +31,10 @@ test("hex normalisation", () => {
   assert.equal(normalizeHex("red"), null);
 });
 
-test("hash is stable and in the palette", () => {
-  assert.equal(hashColor("Plus"), hashColor("plus"));
-  assert.ok(PALETTE.includes(hashColor("whatever")));
+test("fallback is a gray with white text", () => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(FALLBACK.slice(i, i + 2), 16));
+  assert.ok(Math.max(r, g, b) - Math.min(r, g, b) <= 24, "close to neutral");
+  assert.equal(textOn(FALLBACK), "#ffffff");
 });
 
 test("space colors: replaces herdr's picks and our own, keeps a person's hex", () => {

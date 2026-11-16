@@ -1,10 +1,8 @@
 // Pure helpers: no herdr imports, so node can test them (test/color.test.mjs).
 
-// Fallback colors for projects without one, in the spirit of VS Code title bars.
-export const PALETTE = [
-  "#007acc", "#6c3483", "#1e8449", "#922b21", "#7d6608",
-  "#2980b9", "#a04000", "#117a65", "#6b2fa0", "#b03a2e",
-];
+// For projects without a color of their own: a soft gray, so "no color set"
+// is plain to see next to the projects that have one.
+export const FALLBACK = "#5f6670";
 
 // Removes // and /* */ comments and trailing commas, leaving strings untouched,
 // so VS Code's settings.json (JSONC) parses with JSON.parse.
@@ -73,16 +71,6 @@ export function colorFromSettings(text) {
   const peacock = normalizeHex(s["peacock.color"]);
   if (peacock) return { background: peacock, foreground: null, source: "peacock.color" };
   return null;
-}
-
-// FNV-1a: the same name always lands on the same palette slot.
-export function hashColor(name) {
-  let h = 0x811c9dc5;
-  for (const ch of String(name ?? "").toLowerCase()) {
-    h ^= ch.codePointAt(0);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return PALETTE[h % PALETTE.length];
 }
 
 // Black or white text, whichever reads better on the background (WCAG luminance).

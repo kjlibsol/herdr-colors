@@ -41,7 +41,7 @@ per-project VS Code title bars.
   `tools/build-clones.mjs` from the shipped `tabs` and `agents` mods with regex-anchored
   patches that read `space.colors`.
 - `mods/project-color/color.js`: JSONC stripping, `titleBar.activeBackground` then
-  `peacock.color`, FNV-1a hash of the repo name into a 10-color palette, contrast, the merge.
+  `peacock.color`, else the soft gray `#5f6670`; contrast; the merge.
 
 ## Watch out
 
@@ -51,7 +51,7 @@ per-project VS Code title bars.
 - A Herdr update changes the shipped mods, not the clones: rerun the build script. It
   refuses to write if any anchor no longer matches exactly once.
 - The tabs clone still loads its window-button icons from `mods/tabs/`.
-- A space on a stopped machine (dev container) can't be read; it falls back to the hash color.
+- A space on a stopped machine (dev container) can't be read; it falls back to gray.
 - Colors with alpha (`#rrggbbaa`) drop the alpha; `#rgb` is expanded.
 
 ## Done when
@@ -59,6 +59,6 @@ per-project VS Code title bars.
 - `herdr-app check` passes for all three mods.
 - Two spaces in repos with different `titleBar.activeBackground` show those two tab bar colors.
 - A space on a dev container machine shows the color from the settings file inside the container.
-- A repo without settings gets the same color every time.
+- A repo without settings shows the gray `#5f6670`.
 - Switching spaces changes the window title (proves the 0px block runs).
 - Space tiles and agent stripes match the tab bar's color for the same space.
